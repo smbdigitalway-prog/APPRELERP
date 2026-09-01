@@ -24,6 +24,10 @@ frappe.ui.form.on("Style", {
 			frm.save().then(() => render_matrix(frm));
 		});
 
+		frm.add_custom_button(__("Production Selection"), () => {
+			show_production_selection_dialog(frm);
+		}).addClass("btn-info");
+
 		frm.add_custom_button(__("Generate All SKUs"), () => {
 			generate_all_skus(frm);
 		});
@@ -37,10 +41,64 @@ frappe.ui.form.on("Style", {
 		}
 
 		render_style_image_preview(frm);
+		if (frm.is_new()) {
+			frm.add_custom_button(__("Select Existing Style"), () => {
+				frappe.set_route("List", "Style");
+			});
+		}
 	},
 
 	development_stage(frm) {
 		render_workflow(frm);
+	},
+
+	base_style(frm) {
+		if (!frm.doc.base_style) return;
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style.style.get_base_style_snapshot",
+			args: { base_style: frm.doc.base_style, current_style: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Loading Base Style data...")
+		}).then((r) => {
+			if (!r.message) return;
+			const snapshot = r.message;
+			Object.entries(snapshot.fields || {}).forEach(([fieldname, value]) => {
+				if (value !== null && value !== undefined) frm.set_value(fieldname, value);
+			});
+			["colours", "sizes", "bom_items"].forEach((fieldname) => {
+				frm.clear_table(fieldname);
+				(snapshot[fieldname] || []).forEach(row => frm.add_child(fieldname, clean_child_row(row)));
+				frm.refresh_field(fieldname);
+			});
+			frm.dirty();
+			frappe.show_alert({
+				message: __("Base Style data loaded. You can edit the copied fields before saving."),
+				indicator: "green"
+			});
+			render_matrix(frm);
+		});
+	},
+
+	bom_template(frm) {
+		if (!frm.doc.bom_template) return;
+		const import_bom = () => frappe.call({
+			method: "apparel_erp.product_development.doctype.style.style.import_bom_to_style",
+			args: { style: frm.doc.name, bom: frm.doc.bom_template },
+			freeze: true,
+			freeze_message: __("Loading BOM materials...")
+		}).then((r) => {
+			if (!r.message) return;
+			frappe.show_alert({
+				message: __("Loaded {0} BOM material(s).", [r.message.item_count]),
+				indicator: "green"
+			});
+			frm.reload_doc().then(() => render_matrix(frm));
+		});
+		if (frm.is_new()) {
+			frm.save().then(import_bom);
+		} else {
+			import_bom();
+		}
 	},
 
 	// Table MultiSelect fires the fieldname event on add/remove, same as a normal field
@@ -62,6 +120,16 @@ frappe.ui.form.on("Style", {
 		render_size_chart_preview(frm);
 	}
 });
+
+function clean_child_row(row) {
+	const cleaned = { ...row };
+	delete cleaned.name;
+	delete cleaned.parent;
+	delete cleaned.parentfield;
+	delete cleaned.parenttype;
+	delete cleaned.idx;
+	return cleaned;
+}
 
 function render_style_image_preview(frm) {
 	if (!frm.doc.style_image) return;
@@ -138,10 +206,13 @@ function render_matrix(frm) {
 
 	colours.forEach(colour => {
 		const colour_code = colour.colour_code || colour.colour_name;
+		const approved = colour.approved_for_production ? "✓" : "✗";
+		const approval_class = colour.approved_for_production ? "badge-success" : "badge-danger";
 		html += `<tr><td><strong>${frappe.utils.escape_html(colour.colour_name)}</strong>`;
 		if (colour.swatch) {
 			html += ` <span class="indicator-pill" style="background:${colour.swatch}">&nbsp;</span>`;
 		}
+		html += ` <span class="badge ${approval_class}" title="Approved for Production">${approved}</span>`;
 		html += `</td>`;
 
 		sizes.forEach(size_row => {
@@ -151,12 +222,12 @@ function render_matrix(frm) {
 			);
 
 			html += `<td class="text-center apparel-matrix-cell" data-colour="${colour_code}" data-size="${size_code}">`;
-			if (matrix_row && matrix_row.item) {
+			if (matrix_row && (matrix_row.item || matrix_row.sku || matrix_row.bom)) {
 				const item_label = matrix_row.item_name
 					? `${matrix_row.item_name}${matrix_row.item_code ? ` (${matrix_row.item_code})` : ""}`
-					: matrix_row.item;
+					: matrix_row.sku || matrix_row.item || matrix_row.bom;
 				const item_status = matrix_row.status || "Active";
-				html += `<a href="#" class="matrix-sku matrix-generated" data-item="${frappe.utils.escape_html(matrix_row.item)}">
+				html += `<a href="#" class="matrix-sku matrix-generated" data-item="${frappe.utils.escape_html(matrix_row.item || "")}">
 					${frappe.utils.escape_html(item_label)}</a>
 					<button type="button" class="btn btn-xs matrix-status-button" data-row="${frappe.utils.escape_html(matrix_row.name)}">${frappe.utils.escape_html(item_status)}</button>`;
 			} else if (matrix_row) {
@@ -180,6 +251,7 @@ function render_matrix(frm) {
 	</style>`;
 
 	wrapper.html(html);
+	render_production_readiness(frm);
 
 	wrapper.find(".matrix-sku").on("click", function (e) {
 		e.preventDefault();
@@ -245,6 +317,55 @@ function get_size_code(frm, size_link) {
 	const size_doc = frappe.get_doc("Size", size_link);
 	if (size_doc && size_doc.size_code) return size_doc.size_code;
 	return size_link;
+}
+
+function render_production_readiness(frm) {
+	const colours = frm.doc.colours || [];
+	const approved_colours = colours.filter(c => c.approved_for_production);
+	const bom_items = frm.doc.bom_items || [];
+	const available_items = bom_items.filter(b => b.available_in_market !== 0);
+	const unavailable_items = bom_items.filter(b => b.available_in_market === 0);
+	
+	const sizes = frm.doc.sizes || [];
+	const total_possible_skus = approved_colours.length * sizes.length;
+	
+	let status_html = `<div class="apparel-production-readiness" style="padding: 12px; margin: 10px 0; background: #f9f9f9; border-left: 4px solid var(--primary); border-radius: 4px;">
+		<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+			<div>
+				<strong>Colours for Production</strong><br>
+				<span style="font-size: 20px; font-weight: bold; color: ${approved_colours.length > 0 ? '#27ae60' : '#e74c3c'}">
+					${approved_colours.length}/${colours.length}
+				</span>
+			</div>
+			<div>
+				<strong>BOM Materials Available</strong><br>
+				<span style="font-size: 20px; font-weight: bold; color: ${available_items.length === bom_items.length ? '#27ae60' : '#f39c12'}">
+					${available_items.length}/${bom_items.length}
+				</span>
+	`;
+	
+	if (unavailable_items.length > 0) {
+		status_html += `<div style="font-size: 11px; color: #e74c3c; margin-top: 4px;">
+			⚠ ${unavailable_items.length} material(s) unavailable
+		</div>`;
+	}
+	
+	status_html += `
+			</div>
+			<div>
+				<strong>Possible SKUs</strong><br>
+				<span style="font-size: 20px; font-weight: bold; color: var(--primary)">
+					${total_possible_skus}
+				</span>
+				<div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+					${approved_colours.length} colours × ${sizes.length} sizes
+				</div>
+			</div>
+		</div>
+	</div>`;
+	
+	const wrapper = frm.get_field("matrix_html").$wrapper;
+	wrapper.prepend(status_html);
 }
 
 function render_gallery(frm) {
@@ -454,7 +575,8 @@ function generate_all_skus(frm) {
 				args: {
 					style: frm.doc.name,
 					colour_code: pending_rows[0].colour_code,
-					size_code: pending_rows[0].size_code
+					size_code: pending_rows[0].size_code,
+					generate_all: 1
 				},
 				callback: function (r) {
 					frappe.dom.unfreeze();
@@ -471,4 +593,109 @@ function generate_all_skus(frm) {
 			});
 		}
 	);
+}
+
+function show_production_selection_dialog(frm) {
+	"""Open a dialog for users to select which colour/size/BOM combinations will go to production."""
+	frappe.call({
+		method: "apparel_erp.product_development.doctype.style.style.get_production_selection_matrix",
+		args: { style: frm.doc.name },
+		freeze: true,
+		freeze_message: __("Loading production matrix...")
+	}).then((r) => {
+		if (!r.message) return;
+		
+		const matrix_items = r.message.matrix_items || [];
+		
+		// Create HTML table for selection
+		let html = `
+			<div class="production-selection-dialog" style="max-height: 600px; overflow-y: auto;">
+				<table class="table table-bordered table-striped">
+					<thead>
+						<tr>
+							<th style="width: 10%;">For Production</th>
+							<th style="width: 20%;">Colour</th>
+							<th style="width: 20%;">Size</th>
+							<th style="width: 20%;">SKU</th>
+							<th style="width: 20%;">Status</th>
+						</tr>
+					</thead>
+					<tbody>
+		`;
+		
+		matrix_items.forEach(item => {
+			const checked = item.production_for_sku ? "checked" : "";
+			html += `
+				<tr>
+					<td>
+						<input type="checkbox" class="production-checkbox" data-name="${item.name}" ${checked} />
+					</td>
+					<td>${item.colour} (${item.colour_code})</td>
+					<td>${item.size} (${item.size_code})</td>
+					<td>${item.sku}</td>
+					<td>${item.status}</td>
+				</tr>
+			`;
+		});
+		
+		html += `
+					</tbody>
+				</table>
+			</div>
+		`;
+		
+		// Create and show dialog
+		const dialog = new frappe.ui.Dialog({
+			title: __("Select Combinations for Production"),
+			fields: [
+				{
+					fieldtype: "HTML",
+					fieldname: "matrix_html",
+					html: html
+				}
+			],
+			primary_action_label: __("Save Selection"),
+			primary_action() {
+				// Collect selections
+				const selections = [];
+				dialog.$wrapper.find(".production-checkbox").each(function() {
+					selections.push({
+						name: $(this).data("name"),
+						production_for_sku: this.checked ? 1 : 0
+					});
+				});
+				
+				// Save selections
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style.style.save_production_selection",
+					args: {
+						style: frm.doc.name,
+						selection_data: selections
+					},
+					freeze: true,
+					freeze_message: __("Saving production selection...")
+				}).then((r) => {
+					if (r.message && r.message.success) {
+						frappe.show_alert({
+							message: __("Production selection saved successfully!"),
+							indicator: "green"
+						});
+						frm.reload_doc().then(() => render_matrix(frm));
+						dialog.hide();
+					}
+				});
+			},
+			secondary_action_label: __("Select All"),
+			secondary_action() {
+				dialog.$wrapper.find(".production-checkbox").prop("checked", true);
+			}
+		});
+		
+		// Add "Clear All" button
+		dialog.add_custom_action(__("Clear All"), () => {
+			dialog.$wrapper.find(".production-checkbox").prop("checked", false);
+		});
+		
+		dialog.show();
+	});
 }

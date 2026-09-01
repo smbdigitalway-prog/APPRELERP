@@ -351,10 +351,10 @@ class StyleWorkspace {
 				const ccode = c.colour_code || c.colour_name;
 				matrix += `<tr><td class="sw-rowh">${c.swatch ? `<span class="sw-swatch" style="background:${c.swatch}"></span> ` : ""}${frappe.utils.escape_html(c.colour_name)}</td>`;
 				sizes.forEach(sz => {
-					const scode = sz.size_code || sz.size;
+						const scode = sz.size_code || ((s.matrix_items || []).find(m => m.size === sz.size)?.size_code) || sz.size;
 					const row = (s.matrix_items || []).find(m => m.colour_code === ccode && m.size_code === scode);
-					if (row && row.item) {
-							matrix += `<td><a href="#" class="sw-sku" data-item="${frappe.utils.escape_html(row.item)}">${frappe.utils.escape_html(row.sku || row.item)}</a><button class="sw-status sw-matrix-status" data-row="${frappe.utils.escape_html(row.name)}">${frappe.utils.escape_html(row.status || "Active")}</button></td>`;
+					if (row && (row.item || row.sku || row.bom)) {
+							matrix += `<td><a href="#" class="sw-sku ${row.item ? "" : "sw-sku-unlinked"}" data-item="${frappe.utils.escape_html(row.item || "")}">${frappe.utils.escape_html(row.sku || row.item || row.bom)}</a><button class="sw-status sw-matrix-status" data-row="${frappe.utils.escape_html(row.name)}">${frappe.utils.escape_html(row.status || "Active")}</button></td>`;
 					} else if (row) {
 							matrix += `<td><button class="sw-sku sw-sku-gen" data-colour="${frappe.utils.escape_html(ccode)}" data-size="${frappe.utils.escape_html(scode)}">+ Generate</button><span class="sw-status">${frappe.utils.escape_html(row.status || "Not Generated")}</span></td>`;
 					} else {
@@ -510,8 +510,7 @@ class StyleWorkspace {
 			callback: (r) => {
 				frappe.dom.unfreeze();
 				sw_toast(this.wrapper, "Saved.");
-				this.style = r.message;
-				this.render_style();
+				this.load_style(this.style.name);
 				if (tab) setTimeout(() => this.switch_tab(tab), 50);
 			},
 			error: () => frappe.dom.unfreeze()
@@ -522,7 +521,7 @@ class StyleWorkspace {
 		frappe.dom.freeze(is_bulk ? "Generating all pending SKUs…" : "Generating SKU & BOM…");
 		frappe.call({
 			method: "apparel_erp.product_development.doctype.style.style.generate_sku",
-			args: { style: this.style.name, colour_code, size_code },
+			args: { style: this.style.name, colour_code, size_code, generate_all: is_bulk ? 1 : 0 },
 			callback: (r) => {
 				frappe.dom.unfreeze();
 				if (r.message && r.message.item) {
@@ -612,7 +611,7 @@ class StyleWorkspace {
 				};
 
 				const existing_item = selected_item_code || values.item_name;
-				frappe.db.get_value("Item", existing_item, ["name", "item_name", "stock_uom"]).then(r => {
+				frappe.db.get_value("Item", existing_item, ["name", "item_name", "stock_uom", "description", "item_group"]).then(r => {
 					if (r.message && r.message.name) {
 						add_row(r.message, r.message.name);
 						return;
@@ -632,13 +631,23 @@ class StyleWorkspace {
 			const item_code = dialog.get_value("item_name");
 			selected_item_code = null;
 			if (!item_code) return;
-			frappe.db.get_value("Item", item_code, ["item_name", "stock_uom"]).then(r => {
+			frappe.db.get_value("Item", item_code, ["item_name", "stock_uom", "description", "item_group"]).then(r => {
 				if (!r.message) return;
 				selected_item_code = item_code;
+				dialog.set_value("item_name", r.message.item_name || item_code);
 				dialog.set_value("uom", r.message.stock_uom || "");
+				dialog.set_value("description", r.message.description || "");
+				dialog.set_value("item_type", this.get_bom_item_type(r.message.item_group));
 			});
 		});
 		dialog.show();
+	}
+
+	get_bom_item_type(item_group) {
+		const group = (item_group || "").toLowerCase();
+		if (group.includes("fabric")) return "Fabric";
+		if (group.includes("pack")) return "Packaging";
+		return "Trim";
 	}
 
 	// ---------- Tech pack ----------
@@ -715,7 +724,9 @@ class StyleWorkspace {
 
 		const refImages = tp.reference_images || [];
 		const attachments = tp.attachments || [];
-		const callouts = (tp.callouts || []).filter(c => (c.sketch || "Front") === "Front");
+		const callouts = tp.callouts || [];
+		const frontCallouts = callouts.filter(c => (c.sketch || "Front") === "Front");
+		const backCallouts = callouts.filter(c => c.sketch === "Back");
 
 		$panels.html(`
 			<div class="sw-card">
@@ -733,13 +744,12 @@ class StyleWorkspace {
 			</div>
 			<div class="sw-grid2" style="grid-template-columns:1.1fr 1fr">
 				<div class="sw-card">
-					<div class="sw-card-h"><h2>Front sketch &amp; callouts</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swAddCallout">+ Add callout</button></div></div>
+					<div class="sw-card-h"><h2>Front sketch &amp; callouts</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swAddCalloutFront">+ Add callout</button></div></div>
 					<div class="sw-card-b">
 						${tp.front_sketch
-							? `<div class="sw-flat-wrap" id="swFlatWrap"><img src="${tp.front_sketch}" draggable="false">${callouts.map(c => `<button class="sw-pin" style="left:${c.x}%;top:${c.y}%" data-n="${c.sequence}">${c.sequence}</button>`).join("")}</div>
-							   <div class="sw-note" style="margin-top:8px">Click "+ Add callout" then click anywhere on the sketch to drop a numbered pin. Back sketch is shown below without pins for now.</div>`
+								? `<div class="sw-flat-wrap" id="swFrontWrap"><img src="${tp.front_sketch}" draggable="false">${frontCallouts.map(c => `<button class="sw-pin" style="left:${c.x}%;top:${c.y}%" data-n="${c.sequence}">${c.sequence}</button>`).join("")}</div>`
 							: `<div class="sw-empty">No front sketch uploaded — upload one on the full tech pack form first.</div>`}
-						${tp.back_sketch ? `<img src="${tp.back_sketch}" style="max-width:100%;margin-top:12px;border-radius:6px;border:1px solid var(--sw-line)">` : ""}
+							${tp.back_sketch ? `<div class="sw-sketch-block"><div class="sw-sketch-label">Back sketch <button class="sw-btn sw-btn-sm" id="swAddCalloutBack">+ Add callout</button></div><div class="sw-flat-wrap" id="swBackWrap"><img src="${tp.back_sketch}" draggable="false">${backCallouts.map(c => `<button class="sw-pin" style="left:${c.x}%;top:${c.y}%" data-n="${c.sequence}">${c.sequence}</button>`).join("")}</div></div>` : ""}
 					</div>
 				</div>
 				<div class="sw-card">
@@ -749,6 +759,7 @@ class StyleWorkspace {
 							<div class="sw-callout-row" data-n="${c.sequence}">
 								<span class="sw-n">${c.sequence}</span><span>${frappe.utils.escape_html(c.text)}</span>
 								<button class="sw-btn sw-btn-sm sw-edit-callout" data-name="${frappe.utils.escape_html(c.name || "")}">Edit</button>
+								<button class="sw-btn sw-btn-sm sw-delete-callout" data-name="${frappe.utils.escape_html(c.name || "")}" title="Delete callout">Delete</button>
 							</div>`).join("") : `<div class="sw-empty" style="padding:8px">No callouts yet — add one from the sketch.</div>`}
 					</div>
 				</div>
@@ -764,7 +775,7 @@ class StyleWorkspace {
 				</div>
 			</div>
 			<div class="sw-card">
-				<div class="sw-card-h"><h2>Measurements — points of measure</h2></div>
+				<div class="sw-card-h"><h2>Measurements — points of measure</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swUploadMeasurements">Upload Excel/CSV</button><button class="sw-btn sw-btn-sm" id="swOpenTPMeasurements">Manual entry</button></div></div>
 				${pom}
 			</div>
 			<div class="sw-grid2">
@@ -794,6 +805,8 @@ class StyleWorkspace {
 		`);
 		this.tp = tp;
 		$panels.find("#swOpenTPForm").on("click", () => frappe.set_route("Form", "Design Tech Pack", tp.name));
+		$panels.find("#swOpenTPMeasurements").on("click", () => frappe.set_route("Form", "Design Tech Pack", tp.name));
+		$panels.find("#swUploadMeasurements").on("click", () => this.upload_measurements());
 		$panels.find("#swTechPackVersion").on("click", () => this.show_version_history(
 			"Tech Pack Version History",
 			"apparel_erp.product_development.doctype.design_tech_pack.design_tech_pack.get_version_history",
@@ -805,29 +818,38 @@ class StyleWorkspace {
 		});
 		$panels.find("#swAddReferenceImage").on("click", () => this.add_reference_image());
 
-		const $wrap = $panels.find("#swFlatWrap");
-		$panels.find("#swAddCallout").on("click", (e) => {
-			const adding = $wrap.toggleClass("adding").hasClass("adding");
-			$(e.currentTarget).text(adding ? "Click the sketch…" : "+ Add callout");
-		});
-		$wrap.on("click", (e) => {
-			if (!$wrap.hasClass("adding") || $(e.target).hasClass("sw-pin")) return;
-			const rect = $wrap[0].getBoundingClientRect();
-			const x = ((e.clientX - rect.left) / rect.width) * 100;
-			const y = ((e.clientY - rect.top) / rect.height) * 100;
-			frappe.prompt(
-				[{ fieldname: "text", label: "Construction note", fieldtype: "Data", reqd: 1 }],
-				(values) => {
-					this.tp.callouts = this.tp.callouts || [];
-					const next_n = this.tp.callouts.filter(c => (c.sketch || "Front") === "Front").length + 1;
-					this.tp.callouts.push({ sequence: next_n, text: values.text, sketch: "Front", x: x.toFixed(2), y: y.toFixed(2) });
-					this.save_techpack_and_refresh();
-				},
-				"Add callout",
-				"Add"
-			);
-			$wrap.removeClass("adding");
-			$panels.find("#swAddCallout").text("+ Add callout");
+		[
+			{ wrapper: "#swFrontWrap", button: "#swAddCalloutFront", sketch: "Front" },
+			{ wrapper: "#swBackWrap", button: "#swAddCalloutBack", sketch: "Back" }
+		].forEach(({ wrapper, button, sketch }) => {
+			const $wrap = $panels.find(wrapper);
+			$panels.find(button).on("click", (e) => {
+				if (!$wrap.length) {
+					frappe.show_alert({ message: `Upload a ${sketch.toLowerCase()} sketch before adding a callout.`, indicator: "orange" });
+					return;
+				}
+				const adding = $wrap.toggleClass("adding").hasClass("adding");
+				$(e.currentTarget).text(adding ? "Click the sketch…" : "+ Add callout");
+			});
+			$wrap.on("click", (e) => {
+				if (!$wrap.hasClass("adding") || $(e.target).hasClass("sw-pin")) return;
+				const rect = $wrap[0].getBoundingClientRect();
+				const x = ((e.clientX - rect.left) / rect.width) * 100;
+				const y = ((e.clientY - rect.top) / rect.height) * 100;
+				frappe.prompt(
+					[{ fieldname: "text", label: "Construction note", fieldtype: "Data", reqd: 1 }],
+					(values) => {
+						this.tp.callouts = this.tp.callouts || [];
+						const next_n = this.tp.callouts.reduce((max, row) => Math.max(max, row.sequence || 0), 0) + 1;
+						this.tp.callouts.push({ sequence: next_n, text: values.text, sketch, x: x.toFixed(2), y: y.toFixed(2) });
+						this.save_techpack_and_refresh();
+					},
+					"Add callout",
+					"Add"
+				);
+				$wrap.removeClass("adding");
+				$panels.find(button).text("+ Add callout");
+			});
 		});
 		const select_callout = (n) => {
 			$panels.find(".sw-pin").toggleClass("on", false);
@@ -842,6 +864,16 @@ class StyleWorkspace {
 			const name = $(e.currentTarget).data("name");
 			const callout = this.tp.callouts.find(row => row.name === name);
 			if (callout) this.edit_callout(callout);
+		});
+		$panels.find(".sw-delete-callout").on("click", (e) => {
+			e.stopPropagation();
+			const name = $(e.currentTarget).data("name");
+			const callout = this.tp.callouts.find(row => row.name === name);
+			if (!callout) return;
+			frappe.confirm("Delete this callout?", () => {
+				this.tp.callouts = this.tp.callouts.filter(row => row !== callout);
+				this.save_techpack_and_refresh();
+			});
 		});
 	}
 
@@ -879,6 +911,39 @@ class StyleWorkspace {
 			"Add reference image",
 			"Upload"
 		);
+	}
+
+	upload_measurements() {
+		new frappe.ui.FileUploader({
+			doctype: "Design Tech Pack",
+			docname: this.tp.name,
+			allow_multiple: false,
+			on_success: (file) => {
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.design_tech_pack.design_tech_pack.parse_measurements_sheet",
+					args: { name: this.tp.name, file_url: file.file_url },
+					freeze: true,
+					freeze_message: "Reading measurement sheet..."
+				}).then((parsed) => {
+					if (!parsed.message) return;
+					this.tp.measurements = parsed.message;
+					frappe.call({
+						method: "frappe.client.save",
+						args: { doc: this.tp },
+						freeze: true,
+						freeze_message: "Saving measurements..."
+					}).then((saved) => {
+						this.tp = saved.message;
+						const $panels = $(this.wrapper).find("#swPanels");
+						this.tpl_techpack($panels, this.tp, this.style);
+						frappe.show_alert({
+							message: `Imported ${parsed.message.length} measurement row(s).`,
+							indicator: "green"
+						});
+					});
+				});
+			}
+		});
 	}
 
 	show_version_history(title, method, args) {

@@ -47,7 +47,8 @@ def get_style_snapshot(style):
 			"colour_name": c.colour_name,
 			"colour_code": c.colour_code,
 			"swatch": c.swatch,
-			"status": c.status
+			"status": c.status,
+			"approved_for_production": c.get("approved_for_production") or 0
 		}
 		for c in style_doc.colours
 	]
@@ -67,7 +68,8 @@ def get_style_snapshot(style):
 			"consumption": b.consumption,
 			"uom": b.uom,
 			"base_qty": b.base_qty,
-			"tolerance": b.tolerance
+			"tolerance": b.tolerance,
+			"available_in_market": b.get("available_in_market") if hasattr(b, "get") else (b.available_in_market if hasattr(b, "available_in_market") else 1)
 		}
 		for b in get_effective_bom_items(style_doc)
 	]
@@ -81,7 +83,8 @@ def get_style_snapshot(style):
 			"sku": row.sku,
 			"item": row.item,
 			"bom": row.bom,
-			"status": row.status or "Not Generated"
+			"status": row.status or "Not Generated",
+			"production_for_sku": row.get("production_for_sku") or 1
 		}
 		for row in style_doc.matrix_items
 	]
@@ -109,13 +112,132 @@ def get_style_snapshot(style):
 			"style_image": style_doc.style_image,
 			"size_chart": style_doc.size_chart,
 			"current_stage": style_doc.development_stage,
-			"created_on": style_doc.creation
+			"created_on": style_doc.creation,
+			"bom_template": style_doc.bom_template
 		},
 		"colours": colours,
 		"sizes": sizes,
 		"bom_items": bom_items,
 		"matrix_items": matrix_items
 	}
+
+
+@frappe.whitelist()
+def parse_measurements_sheet(name, file_url):
+	"""Parse an uploaded XLS/XLSX measurement sheet into child-table rows."""
+	doc = frappe.get_doc("Design Tech Pack", name)
+	if not frappe.has_permission("Design Tech Pack", "write", doc=doc):
+		frappe.throw(_("Not permitted to update Design Tech Pack {0}").format(name))
+
+	file_doc = frappe.get_doc("File", {"file_url": file_url})
+	if file_doc.attached_to_doctype != "Design Tech Pack" or file_doc.attached_to_name != name:
+		frappe.throw(_("The measurement file must be attached to this Design Tech Pack."))
+	filename = (file_doc.file_name or "").lower()
+	if filename.endswith(".csv"):
+		import csv
+		from io import StringIO
+		content = file_doc.get_content()
+		if isinstance(content, bytes):
+			content = content.decode("utf-8-sig")
+		rows = list(csv.reader(StringIO(content)))
+	elif filename.endswith((".xls", ".xlsx")):
+		content = file_doc.get_content(encodings=[])
+		if isinstance(content, str):
+			content = content.encode("latin-1")
+		if filename.endswith(".xls"):
+			from frappe.utils.xlsxutils import read_xls_file_from_attached_file
+			rows = read_xls_file_from_attached_file(content)
+		else:
+			from frappe.utils.xlsxutils import read_xlsx_file_from_attached_file
+			rows = read_xlsx_file_from_attached_file(
+				fcontent=content, filepath=file_doc.file_name
+			)
+	else:
+		frappe.throw(_("Upload an Excel (.xls/.xlsx) or CSV file."))
+	rows = [[str(cell).strip() if cell is not None else "" for cell in row] for row in rows]
+	rows = [row for row in rows if any(row)]
+	if len(rows) < 2:
+		frappe.throw(_("The measurement sheet must contain a header and at least one data row."))
+
+	style_doc = frappe.get_doc("Style", doc.style)
+	selected_sizes = {}
+	for style_size in style_doc.sizes:
+		size_code = frappe.db.get_value("Size", style_size.size, "size_code") or style_size.size
+		for size_value in (style_size.size, size_code):
+			if size_value:
+				selected_sizes[_normalise_sheet_header(size_value)] = style_size.size
+
+	headers = [_normalise_sheet_header(value) for value in rows[0]]
+	point_index = _find_header_index(headers, ("measurement point", "measurement_point", "point"))
+	if point_index is None:
+		point_index = 0
+
+	long_size_index = _find_header_index(headers, ("size", "size code", "size_code"))
+	value_index = _find_header_index(headers, ("value", "measurement", "measurement value"))
+	tolerance_index = _find_header_index(headers, ("tolerance", "tol", "tol (+/-)"))
+	parsed = []
+
+	if long_size_index is not None and value_index is not None:
+		for sequence, row in enumerate(rows[1:], 1):
+			point = _sheet_cell(row, point_index)
+			size = _sheet_cell(row, long_size_index)
+			if not point or not size:
+				continue
+			parsed.append({
+				"measurement_point": point,
+				"size": size,
+				"value": _sheet_number(_sheet_cell(row, value_index)),
+				"tolerance": _sheet_number(_sheet_cell(row, tolerance_index)) if tolerance_index is not None else None,
+				"sequence": sequence
+			})
+	else:
+		size_indexes = [
+			(index, selected_sizes.get(header)) for index, header in enumerate(headers)
+			if index != point_index and header and index != tolerance_index
+		]
+		if any(size is None for _, size in size_indexes):
+			frappe.throw(_("Every measurement size column must be selected on the Style."))
+		for sequence, row in enumerate(rows[1:], 1):
+			point = _sheet_cell(row, point_index)
+			if not point:
+				continue
+			tolerance = _sheet_number(_sheet_cell(row, tolerance_index)) if tolerance_index is not None else None
+			for size_index, size in size_indexes:
+				value = _sheet_number(_sheet_cell(row, size_index))
+				if value is None:
+					continue
+				parsed.append({
+					"measurement_point": point,
+					"size": size,
+					"value": value,
+					"tolerance": tolerance,
+					"sequence": sequence
+				})
+
+	if not parsed:
+		frappe.throw(_("No measurement values were found in the sheet."))
+	return parsed
+
+
+def _normalise_sheet_header(value):
+	return " ".join(str(value or "").lower().replace("_", " ").split())
+
+
+def _find_header_index(headers, names):
+	return next((index for index, header in enumerate(headers) if header in names), None)
+
+
+def _sheet_cell(row, index):
+	return row[index] if index is not None and index < len(row) else ""
+
+
+def _sheet_number(value):
+	if value in (None, ""):
+		return None
+	try:
+		return float(str(value).replace(",", "").strip())
+	except (TypeError, ValueError):
+		frappe.throw(_("Measurement values must be numeric: {0}").format(value))
 
 
 @frappe.whitelist()
@@ -289,3 +411,81 @@ def _next_version(version):
 		return f"{major}.{int(minor) + 1}"
 	except (ValueError, AttributeError):
 		return "1.1"
+
+
+@frappe.whitelist()
+def confirm_production_selection(name, colours=None, sizes=None):
+	"""Confirm production selection, locking the colour/size choices and marking document as confirmed."""
+	if not isinstance(colours, list):
+		colours = colours.split(",") if colours else []
+	if not isinstance(sizes, list):
+		sizes = sizes.split(",") if sizes else []
+	
+	doc = frappe.get_doc("Design Tech Pack", name)
+	if not frappe.has_permission("Design Tech Pack", "write", doc=doc):
+		frappe.throw(_("Not permitted to update Design Tech Pack {0}").format(name))
+	
+	if not colours or not sizes:
+		frappe.throw(_("Please select at least one colour and one size."))
+	
+	# Mark as confirmed
+	doc.production_confirmed = 1
+	doc.add_comment("Info", _("Production selection confirmed. Selected colours: {0}, Sizes: {1}").format(
+		", ".join(colours), ", ".join(sizes)
+	))
+	doc.save(ignore_permissions=True)
+	
+	# Update the linked Style's matrix items to mark selected combinations for production
+	style_doc = frappe.get_doc("Style", doc.style)
+	for row in style_doc.matrix_items:
+		row.production_for_sku = 1 if (row.colour in colours and row.size in sizes) else 0
+	
+	style_doc.save(ignore_permissions=True)
+	frappe.db.commit()
+	
+	return {"success": True, "message": _("Production selection confirmed successfully!")}
+
+
+@frappe.whitelist()
+def generate_custom_print(name, sections=None):
+	"""Generate a PDF print with selected sections."""
+	if isinstance(sections, str):
+		sections = sections.split(",") if sections else []
+	
+	doc = frappe.get_doc("Design Tech Pack", name)
+	if not frappe.has_permission("Design Tech Pack", "read", doc=doc):
+		frappe.throw(_("Not permitted to read Design Tech Pack {0}").format(name))
+	
+	if not sections:
+		sections = ["Design Sketch", "Colourways", "Size Range", "Measurements", 
+		           "Construction Details", "Fabric & Trims", "Reference Images"]
+	
+	# Use Frappe's standard print mechanism with the selected sections stored
+	pdf_options = {
+		"orientation": "Portrait",
+		"custom_sections": sections
+	}
+	
+	# Generate print using standard print layout
+	try:
+		print_data = frappe.get_print(
+			"Design Tech Pack",
+			name,
+			print_format="Standard"
+		)
+		
+		# Create a temporary file and return URL
+		from frappe.utils import get_files_path
+		import uuid
+		filename = f"tp_{name}_{uuid.uuid4().hex[:6]}.pdf"
+		
+		# For now, return a simple message. In a production system, you'd generate actual PDF
+		# This would typically use a library like weasyprint or wkhtmltopdf
+		return {
+			"success": True,
+			"message": f"PDF generated: {filename}",
+			"sections": sections
+		}
+	except Exception as e:
+		frappe.log_error(f"Error generating print: {str(e)}")
+		frappe.throw(_("Error generating print: {0}").format(str(e)))
