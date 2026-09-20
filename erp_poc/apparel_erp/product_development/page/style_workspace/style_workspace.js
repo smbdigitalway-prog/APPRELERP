@@ -1,0 +1,3555 @@
+// Style Workspace — a custom navy-themed Page that mirrors the style-screen-prototype.html
+// look & feel, wired to the real Style / Design Tech Pack doctypes in this app.
+//
+// Route:  #style-workspace                -> picker (search a style)
+//         #style-workspace/KT-SS26-001    -> that style's workspace
+
+frappe.pages["style-workspace"].on_page_load = function (wrapper) {
+	new StyleWorkspace(wrapper);
+};
+
+frappe.pages["style-workspace"].on_page_show = function (wrapper) {
+	if (wrapper.style_workspace) wrapper.style_workspace.route_changed();
+};
+
+const SW_STAGES = [
+	"Style Created",
+	"Design & Tech Pack",
+	"Sampling",
+	"Fit Approval",
+	"Proto Approval",
+	"Production"
+];
+
+class StyleWorkspace {
+	constructor(wrapper) {
+		this.wrapper = wrapper;
+		this.page = frappe.ui.make_app_page({
+			parent: wrapper,
+			title: "Style Workspace",
+			single_column: true
+		});
+		wrapper.style_workspace = this;
+		inject_sw_css();
+		this.active_tab = "info";
+		this.render_shell();
+		this.route_changed();
+	}
+
+	route_changed() {
+		const parts = frappe.get_route(); // ["style-workspace", "KT-SS26-001"]
+		const style_no = parts[1];
+		if (style_no) {
+			this.load_style(style_no);
+		} else {
+			this.show_picker();
+		}
+	}
+
+	render_shell() {
+		const $body = $(this.page.body);
+		$body.empty();
+		$body.append(`
+			<div class="sw-app">
+				<aside class="sw-side">
+					<div class="sw-brand">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M12 2 8 6l4 3 4-3-4-4zM4 9l4-3 4 3v13H4V9zM20 9l-4-3-4 3v13h8V9z"/>
+						</svg>
+						Apparel ERP
+					</div>
+					<nav class="sw-nav" id="swNav"></nav>
+				</aside>
+				<div class="sw-main">
+					<div class="sw-top">
+						<div class="sw-crumb" id="swCrumb">Product development <span>/</span> Styles</div>
+						<div class="sw-search-wrap">
+							<input class="sw-search" id="swSearch" placeholder="Search a style no. or name…" autocomplete="off">
+							<div class="sw-search-results" id="swSearchResults"></div>
+						</div>
+						<div class="sw-avatar">${frappe.avatar ? "" : (frappe.session.user_fullname || "U").split(" ").map(w => w[0]).slice(0,2).join("").toUpperCase()}</div>
+					</div>
+					<div id="swContent"></div>
+				</div>
+			</div>
+			<div class="sw-scrim" id="swScrim"></div>
+			<div class="sw-drawer" id="swDrawer">
+				<div class="sw-drawer-h"><h3 id="swDTitle"></h3><button class="sw-btn sw-btn-sm" id="swDClose" style="margin-left:auto">Close</button></div>
+				<div class="sw-drawer-b" id="swDBody"></div>
+			</div>
+			<div class="sw-toast" id="swToast"></div>
+		`);
+
+		this.render_nav();
+		this.bind_search();
+
+		$body.find("#swScrim, #swDClose").on("click", () => this.close_drawer());
+	}
+
+	render_nav() {
+		const items = [
+			{ label: "Dashboard", route: null, disabled: true },
+			{ label: "Product development", route: "style-workspace", on: true },
+			{ label: "Styles", route: "List/Style" },
+			{ label: "Samples", disabled: true },
+			{ label: "Tech packs", route: "List/Design Tech Pack" },
+			{ sep: true },
+			{ label: "Time & action", disabled: true },
+			{ label: "Purchasing", disabled: true },
+			{ label: "Job work", disabled: true },
+			{ label: "Inventory", route: "List/Item" },
+			{ label: "Production", route: "List/BOM" },
+			{ label: "Quality", disabled: true },
+			{ sep: true },
+			{ label: "Reports", disabled: true },
+			{ label: "Settings", route: "workspaces" }
+		];
+		const html = items.map(it => {
+			if (it.sep) return `<div class="sw-sep"></div>`;
+			if (it.disabled) return `<a class="sw-disabled" title="No doctype wired up yet">${it.label} <span class="sw-soon">soon</span></a>`;
+			return `<a href="#${it.route}" class="${it.on ? "on" : ""}">${it.label}</a>`;
+		}).join("");
+		this.wrapper.querySelector("#swNav").innerHTML = html;
+	}
+
+	bind_search() {
+		const $input = $(this.wrapper).find("#swSearch");
+		const $results = $(this.wrapper).find("#swSearchResults");
+		let timer;
+		$input.on("input", () => {
+			clearTimeout(timer);
+			const term = $input.val().trim();
+			if (!term) { $results.hide().empty(); return; }
+			timer = setTimeout(() => {
+				frappe.call({
+					method: "frappe.client.get_list",
+					args: {
+						doctype: "Style",
+						filters: [["style_no", "like", `%${term}%`]],
+						or_filters: [["style_name", "like", `%${term}%`]],
+						fields: ["name", "style_no", "style_name", "status"],
+						limit: 8
+					}
+				}).then(r => {
+					const rows = r.message || [];
+					if (!rows.length) {
+						$results.html(`<div class="sw-search-empty">No styles found</div>`).show();
+						return;
+					}
+					$results.html(rows.map(s =>
+						`<div class="sw-search-row" data-name="${frappe.utils.escape_html(s.name)}">
+							<b>${frappe.utils.escape_html(s.style_no)}</b>
+							<span>${frappe.utils.escape_html(s.style_name || "")}</span>
+						</div>`
+					).join("")).show();
+					$results.find(".sw-search-row").on("click", function () {
+						frappe.set_route("style-workspace", $(this).data("name"));
+						$results.hide().empty();
+						$input.val("");
+					});
+				});
+			}, 250);
+		});
+		$(document).on("click.sw-search", (e) => {
+			if (!$(e.target).closest(".sw-search-wrap").length) $results.hide();
+		});
+	}
+
+	show_picker() {
+		$(this.wrapper).find("#swCrumb").text("Product development / Styles");
+		$(this.wrapper).find("#swContent").html(`
+			<div class="sw-picker">
+				<h2>Pick a style</h2>
+				<p class="sw-muted">Search above, or choose one below.</p>
+				<div id="swPickerList" class="sw-picker-list"></div>
+			</div>
+		`);
+		frappe.call({
+			method: "frappe.client.get_list",
+			args: { doctype: "Style", fields: ["name", "style_no", "style_name", "status", "development_stage"], limit_page_length: 20, order_by: "modified desc" }
+		}).then(r => {
+			const rows = r.message || [];
+			const $list = $(this.wrapper).find("#swPickerList");
+			if (!rows.length) {
+				$list.html(`<div class="sw-empty">No styles yet. <a href="#Form/Style/new">Create one</a>.</div>`);
+				return;
+			}
+			$list.html(rows.map(s => `
+				<div class="sw-picker-row" data-name="${frappe.utils.escape_html(s.name)}">
+					<div>
+						<b>${frappe.utils.escape_html(s.style_no)}</b>
+						<div class="sw-muted">${frappe.utils.escape_html(s.style_name || "")}</div>
+					</div>
+					<span class="sw-pill ${sw_status_pill(s.status)}">${s.status || "Not Started"}</span>
+				</div>`).join(""));
+			$list.find(".sw-picker-row").on("click", function () {
+				frappe.set_route("style-workspace", $(this).data("name"));
+			});
+		});
+	}
+
+	load_style(style_no) {
+		$(this.wrapper).find("#swContent").html(`<div class="sw-loading">Loading ${frappe.utils.escape_html(style_no)}…</div>`);
+		frappe.call({ method: "frappe.client.get", args: { doctype: "Style", name: style_no } })
+			.then(r => {
+				if (!r.message) {
+					$(this.wrapper).find("#swContent").html(`<div class="sw-empty">Style "${frappe.utils.escape_html(style_no)}" not found.</div>`);
+					return;
+				}
+				this.style = r.message;
+				$(this.wrapper).find("#swCrumb").html(
+					`Product development <span>/</span> Styles <span>/</span> <b>${frappe.utils.escape_html(this.style.style_no)}</b>`
+				);
+				this.render_style();
+			});
+	}
+
+	render_style() {
+		const s = this.style;
+		const $content = $(this.wrapper).find("#swContent");
+		$content.html(`
+			<div class="sw-head">
+				<div class="sw-head-row">
+					<div>
+						<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+							<h1>${frappe.utils.escape_html(s.style_no)}</h1>
+							<span class="sw-pill ${sw_status_pill(s.status)}"><span class="sw-dot"></span>${s.status || "Not Started"}</span>
+							<span class="sw-pill sw-pill-mut">${s.development_stage || "Style Created"}</span>
+						</div>
+						<div class="sw-sub">${frappe.utils.escape_html(s.style_name || "")} ${s.customer_brand ? " · " + frappe.utils.escape_html(s.customer_brand) : ""} ${s.season ? " · " + frappe.utils.escape_html(s.season) : ""}</div>
+					</div>
+					<div class="sw-head-actions">
+						<button class="sw-btn" id="swOpenForm">Open full form</button>
+						<button class="sw-btn sw-btn-pri" id="swOpenTechpack">Design & tech pack</button>
+					</div>
+				</div>
+				<div class="sw-tabs" id="swTabs">
+					<button data-t="info" class="${this.active_tab === "info" ? "on" : ""}">Style information</button>
+					<button data-t="order" class="${this.active_tab === "order" ? "on" : ""}">Order${this.order_qty_count ? `<span class="sw-count">${this.order_qty_count}</span>` : ""}</button>
+					<button data-t="colours" class="${this.active_tab === "colours" ? "on" : ""}">Colours &amp; sizes<span class="sw-count">${(s.matrix_items || []).length}</span></button>
+					<button data-t="bom" class="${this.active_tab === "bom" ? "on" : ""}">Style BOM</button>
+					<button data-t="prodbom" class="${this.active_tab === "prodbom" ? "on" : ""}">Production BOM${this.prodbom_count ? `<span class="sw-count">${this.prodbom_count}</span>` : ""}</button>
+					<button data-t="techpack" class="${this.active_tab === "techpack" ? "on" : ""}">Tech pack</button>
+					<button data-t="costing" class="${this.active_tab === "costing" ? "on" : ""}">Costing</button>
+					<button data-t="sampling" class="${this.active_tab === "sampling" ? "on" : ""}">Sampling${this.sampling_count ? `<span class="sw-count">${this.sampling_count}</span>` : ""}</button>
+					<button data-t="tna" class="${this.active_tab === "tna" ? "on" : ""}">Time &amp; action${this.tna_count ? `<span class="sw-count">${this.tna_count}</span>` : ""}</button>
+					<button data-t="jobwork" class="${this.active_tab === "jobwork" ? "on" : ""}">Job work</button>
+				</div>
+			</div>
+			<div class="sw-body" id="swPanels"></div>
+		`);
+
+		$content.find("#swOpenForm").on("click", () => frappe.set_route("Form", "Style", s.name));
+		$content.find("#swOpenTechpack").on("click", () => this.open_tech_pack());
+		$content.find("#swTabs button").on("click", (e) => {
+			$content.find("#swTabs button").removeClass("on");
+			$(e.currentTarget).addClass("on");
+			this.active_tab = $(e.currentTarget).data("t");
+			this.render_panel();
+		});
+
+		this.render_panel();
+	}
+
+	render_panel() {
+		const s = this.style;
+		const $panels = $(this.wrapper).find("#swPanels");
+		if (this.active_tab === "info") { $panels.html(this.tpl_info(s)); this.bind_info($panels); }
+		else if (this.active_tab === "order") { this.render_order_tab($panels); }
+		else if (this.active_tab === "colours") { $panels.html(this.tpl_colours(s)); this.bind_colours(); }
+		else if (this.active_tab === "bom") { this.render_bom_tab($panels); }
+		else if (this.active_tab === "prodbom") { this.render_prodbom_tab($panels); }
+		else if (this.active_tab === "techpack") this.render_techpack_tab($panels);
+		else if (this.active_tab === "costing") { this.render_costing_tab($panels); }
+		else if (this.active_tab === "sampling") { this.render_sampling_tab($panels); }
+		else if (this.active_tab === "tna") { this.render_tna_tab($panels); }
+		else if (this.active_tab === "jobwork") $panels.html(this.tpl_preview_tab(
+			"Job work isn't wired to a doctype yet.",
+			"This tab is a styled placeholder. Add a Job Work / Subcontracting doctype and this page can show real cut plans, dispatch, and receipts here."
+		));
+	}
+
+	// ---------- Style information ----------
+	tpl_info(s) {
+		return `
+			<div class="sw-grid2">
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Style information</h2></div>
+					<div class="sw-card-b">
+						<div class="sw-grid2" style="gap:14px">
+							<div>
+								${sw_attr("Style no", s.style_no)}
+								${sw_attr("Style name", s.style_name)}
+								${s.base_style ? sw_attr_link("Base style", s.base_style, () => frappe.set_route("style-workspace", s.base_style)) : ""}
+								${sw_attr("Product type", s.product_type)}
+								${sw_attr("Category", s.category)}
+								${sw_attr("Season", s.season)}
+							</div>
+							<div>
+								${sw_attr("Customer / brand", s.customer_brand)}
+								${sw_attr("Designer", s.designer)}
+								${sw_attr("Merchandiser", s.merchandiser)}
+								${sw_attr("Country of origin", s.country_of_origin)}
+								${sw_attr("Launch date", frappe.datetime.str_to_user(s.launch_date))}
+							</div>
+						</div>
+						${s.description ? `<p style="margin-top:10px;color:var(--sw-ink-2);font-size:13.5px">${frappe.utils.escape_html(s.description)}</p>` : ""}
+					</div>
+				</div>
+				<div>
+					<div class="sw-card">
+						<div class="sw-card-h"><h2>Style attributes</h2></div>
+						<div class="sw-card-b">
+							${sw_attr("Fit", s.fit)}
+							${sw_attr("Sleeve", s.sleeve)}
+							${sw_attr("Placket", s.placket)}
+							${sw_attr("Collar", s.collar)}
+							${sw_attr("Gender", s.gender)}
+							${sw_attr("Fabric type", s.fabric_type)}
+						</div>
+					</div>
+					<div class="sw-card">
+						<div class="sw-card-h"><h2>Linked records</h2></div>
+						<div class="sw-card-b">
+							${sw_attr_link("Item template", s.style_no, () => frappe.set_route("Form", "Item", s.style_no))}
+							${sw_attr_link("Variants", `${(s.matrix_items || []).filter(m => m.item).length} generated of ${(s.matrix_items || []).length}`, () => this.switch_tab("colours"))}
+							${sw_attr_link("Style BOM", "Manage \u2192", () => this.switch_tab("bom"))}
+							${sw_attr_link("Costing", "Open \u2192", () => this.switch_tab("costing"))}
+							<div id="swApparelOrderRow"></div>
+						</div>
+					</div>
+					<div class="sw-card">
+						<div class="sw-card-h"><h2>BOM generation</h2></div>
+						<div class="sw-card-b">
+							<div class="sw-f">
+								<label>Generate BOM at</label>
+								<select id="swBomStage">
+									<option value="" ${!s.bom_generation_stage ? "selected" : ""} disabled>Select a stage\u2026</option>
+									<option value="Design & Tech Pack" ${s.bom_generation_stage === "Design & Tech Pack" ? "selected" : ""}>Design & Tech Pack</option>
+									<option value="Costing" ${s.bom_generation_stage === "Costing" ? "selected" : ""}>Costing</option>
+									<option value="Sampling" ${s.bom_generation_stage === "Sampling" ? "selected" : ""}>Sampling</option>
+								</select>
+							</div>
+							<div class="sw-note">${s.bom_generation_stage
+								? `The "Generate BOM" action currently appears on the <b>${frappe.utils.escape_html(s.bom_generation_stage)}</b> tab. You can change this at any time - the next Style BOM generated will follow whatever is selected here.`
+								: `Choose which stage's tab should show the "Generate BOM" action. Nothing will generate until a stage is selected here.`}</div>
+						</div>
+					</div>
+				</div>
+			</div>
+			<div class="sw-card">
+				<div class="sw-card-h"><h2>Development workflow</h2><div class="sw-right"><span class="sw-pill sw-pill-mut">Stage ${SW_STAGES.indexOf(s.development_stage || "Style Created") + 1} of ${SW_STAGES.length}</span></div></div>
+				<div class="sw-card-b"><div class="sw-flow" id="swFlow">${this.tpl_flow(s)}</div></div>
+			</div>
+		`;
+	}
+
+	bind_info($panels) {
+		$panels.off();
+		$panels.find("#swBomStage").on("change", (e) => {
+			const $select = $(e.currentTarget);
+			const stage = $select.val();
+			if (!stage) return;
+			const previous = this.style.bom_generation_stage;
+			this.confirm_bom_stage_change(stage, previous, null, () => {
+				// Reverted - put the select back to whatever was saved before.
+				$select.val(previous || "");
+			});
+		});
+		// "Apparel order" row only appears once there's a real PO on file -
+		// Apparel Order is now the authoritative source (spec Layer 2), but
+		// fall back to whatever's on the T&A schedule for styles that only
+		// have that (set up before Apparel Order existed).
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.apparel_order.apparel_order.get_workspace_order",
+			args: { style: this.style.name }
+		}).then((r) => {
+			const o = r.message;
+			if (o && o.buyer_po) {
+				const label = `${frappe.utils.escape_html(o.buyer_po)} \u00b7 ${Number(o.total_quantity || 0).toLocaleString()} pcs`;
+				$panels.find("#swApparelOrderRow").replaceWith(sw_attr_link("Apparel order", label, () => this.switch_tab("order")));
+				return;
+			}
+			frappe.call({
+				method: "apparel_erp.product_development.doctype.style_tna.style_tna.get_workspace_tna",
+				args: { style: this.style.name }
+			}).then((r2) => {
+				const t = r2.message;
+				if (!t || !t.po_reference) return;
+				const label = t.po_qty ? `${frappe.utils.escape_html(t.po_reference)} \u00b7 ${Number(t.po_qty).toLocaleString()} pcs` : frappe.utils.escape_html(t.po_reference);
+				$panels.find("#swApparelOrderRow").replaceWith(sw_attr_link("Apparel order", label, () => this.switch_tab("tna")));
+			});
+		});
+	}
+
+	tpl_flow(s) {
+		const current = s.development_stage || "Style Created";
+		const idx = SW_STAGES.indexOf(current);
+		return SW_STAGES.map((stage, i) => {
+			const state = i < idx ? "done" : i === idx ? "now" : "wait";
+			const col = { done: "#15803D", now: "#2563EB", wait: "#CBD5E1" }[state];
+			return `${i ? '<div class="sw-arrow">&rarr;</div>' : ""}
+				<div class="sw-step">
+					<div class="sw-bub" data-stage="${stage}" style="background:${col}">${state === "done" ? "\u2713" : i + 1}</div>
+					<div class="sw-nm" ${state === "now" ? 'style="color:#2563EB"' : ""}>${stage}</div>
+					<small>${state === "done" ? "Done" : state === "now" ? "In progress" : "Pending"}</small>
+				</div>`;
+		}).join("");
+	}
+
+	// ---------- Generate BOM (Design & Tech / Costing / Sampling) ----------
+	bom_stage_label() {
+		// No default - returns falsy until the user explicitly chooses a
+		// stage on the Info tab. Freely re-selectable afterwards; whatever
+		// it's currently set to is what the next "Generate BOM" click uses.
+		return this.style.bom_generation_stage || "";
+	}
+
+	save_bom_generation_stage(stage, onDone) {
+		frappe.dom.freeze("Saving…");
+		frappe.call({
+			method: "frappe.client.set_value",
+			args: { doctype: "Style", name: this.style.name, fieldname: "bom_generation_stage", value: stage },
+			callback: () => {
+				frappe.dom.unfreeze();
+				this.style.bom_generation_stage = stage;
+				sw_toast(this.wrapper, `BOM will now be generated at the ${stage} stage. Any BOM generated from here on follows this choice.`);
+				if (onDone) onDone();
+			},
+			error: () => frappe.dom.unfreeze()
+		});
+	}
+
+	confirm_bom_stage_change(stage, previous, onSaved, onCancelled) {
+		// Switching stages is safe on its own - the choice just controls
+		// which tab shows "Generate BOM" and which gate the next click has
+		// to pass. But if this style already has its OWN Style BOM (not one
+		// inherited from a Base Style), that BOM was generated under the
+		// old choice and won't be touched or regenerated automatically by
+		// this change, so warn before letting it through.
+		if (!previous || previous === stage) {
+			this.save_bom_generation_stage(stage, onSaved);
+			return;
+		}
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_bom.style_bom.get_workspace_style_bom",
+			args: { style: this.style.name }
+		}).then((r) => {
+			const bom = r.message || {};
+			const has_own_bom = bom.name && !bom.inherited_from;
+			if (!has_own_bom) {
+				this.save_bom_generation_stage(stage, onSaved);
+				return;
+			}
+			const state = bom.docstatus === 1 ? "submitted" : "draft";
+			frappe.confirm(
+				`${frappe.utils.escape_html(this.style.style_no || this.style.name)} already has a ${state} Style BOM ` +
+				`(<b>${frappe.utils.escape_html(bom.name)}</b>), generated while "Generate BOM at" was set to <b>${frappe.utils.escape_html(previous)}</b>. ` +
+				`Switching to <b>${frappe.utils.escape_html(stage)}</b> will <b>not</b> automatically update or regenerate that BOM - ` +
+				`you'll need to amend/regenerate it yourself if it should reflect the new stage. Continue?`,
+				() => this.save_bom_generation_stage(stage, onSaved),
+				() => { if (onCancelled) onCancelled(); }
+			);
+		});
+	}
+
+	generate_bom_button_html(stage) {
+		const configured = this.bom_stage_label();
+		if (configured !== stage) return "";
+		return `<button class="sw-btn sw-btn-pri sw-btn-sm" id="swGenBom" data-stage="${stage}">Generate BOM</button>`;
+	}
+
+	generate_bom_hint_html(stage) {
+		// Shown on the tabs that are NOT the chosen generation stage, so
+		// whoever is on Tech Pack/Costing/Sampling always understands why
+		// the "Generate BOM" button isn't sitting in front of them here -
+		// either no stage has been chosen yet, or the style owner picked a
+		// different one - and this links straight to where that choice is
+		// made (and can still be changed).
+		const configured = this.bom_stage_label();
+		if (configured === stage) return "";
+		if (!configured) {
+			return `<span class="sw-pill sw-pill-mut sw-gen-bom-hint" title="Choose a stage on the Style information tab" style="cursor:pointer">Choose a BOM generation stage</span>`;
+		}
+		return `<span class="sw-pill sw-pill-mut sw-gen-bom-hint" title="Change this on the Style information tab" style="cursor:pointer">BOM generates after ${configured}</span>`;
+	}
+
+	bind_generate_bom_button($panels) {
+		$panels.find(".sw-gen-bom-hint").on("click", () => this.switch_tab("info"));
+		$panels.find("#swGenBom").on("click", (e) => {
+			try {
+				const stage = $(e.currentTarget).data("stage");
+				frappe.confirm(
+					`Generate the Style BOM for ${this.style && this.style.style_no ? this.style.style_no : this.style.name} now, at the ${stage} stage?`,
+					() => {
+						frappe.dom.freeze("Generating BOM…");
+						frappe.call({
+							method: "apparel_erp.product_development.doctype.style_bom.style_bom.generate_style_bom_for_stage",
+							args: { style: this.style.name, stage },
+							callback: (r) => {
+								frappe.dom.unfreeze();
+								const msg = r.message || {};
+								sw_toast(this.wrapper, msg.created ? "Style BOM created." : "Style BOM already exists — opening it.");
+								this.switch_tab("bom");
+							},
+							error: (r) => {
+								frappe.dom.unfreeze();
+								console.error("generate_style_bom_for_stage failed", r);
+							}
+						});
+					}
+				);
+			} catch (err) {
+				// A silently swallowed exception here (e.g. this.style not
+				// loaded yet) is exactly what makes "Generate BOM" look like
+				// it does nothing when clicked - surface it instead of
+				// failing silently.
+				console.error("Generate BOM click handler threw", err);
+				frappe.msgprint({
+					title: "Generate BOM",
+					indicator: "red",
+					message: `Something went wrong before the confirmation dialog could open: ${err.message || err}`
+				});
+			}
+		});
+	}
+
+	switch_tab(t) {
+		this.active_tab = t;
+		$(this.wrapper).find(`#swTabs button[data-t="${t}"]`).trigger("click");
+	}
+
+	// ---------- Colours & sizes ----------
+	tpl_colours(s) {
+		const colours = (s.colours || []).filter(c => (c.status || "Active") === "Active");
+		const sizes = s.sizes || [];
+		let matrix = `<div class="sw-empty">Add colours and sizes on the full form, then come back here.</div>`;
+		if (colours.length && sizes.length) {
+			matrix = `<table class="sw-matrix"><thead><tr><th>Colour</th>${sizes.map(sz => `<th>${frappe.utils.escape_html(sz.size_code || sz.size)}</th>`).join("")}</tr></thead><tbody>`;
+			colours.forEach((c, i) => {
+				const ccode = c.colour_code || c.colour_name;
+				const approvedPill = `<span class="sw-pill sw-colour-approve ${c.approved_for_production ? "sw-pill-ok" : "sw-pill-warn"}" data-idx="${i}" title="Click to toggle - required for this colour to appear in the matrix and count toward BOM/SKU generation">${c.approved_for_production ? "Approved" : "Not approved ⚠"}</span>`;
+				matrix += `<tr><td class="sw-rowh">${c.swatch ? `<span class="sw-swatch" style="background:${c.swatch}"></span> ` : ""}${frappe.utils.escape_html(c.colour_name)} ${approvedPill}</td>`;
+				sizes.forEach(sz => {
+						const scode = sz.size_code || ((s.matrix_items || []).find(m => m.size === sz.size)?.size_code) || sz.size;
+					const row = (s.matrix_items || []).find(m => m.colour_code === ccode && m.size_code === scode);
+					if (row && (row.item || row.sku || row.bom)) {
+							matrix += `<td><a href="#" class="sw-sku ${row.item ? "" : "sw-sku-unlinked"}" data-item="${frappe.utils.escape_html(row.item || "")}">${frappe.utils.escape_html(row.sku || row.item || row.bom)}</a><button class="sw-status sw-matrix-status" data-row="${frappe.utils.escape_html(row.name)}">${frappe.utils.escape_html(row.status || "Active")}</button></td>`;
+					} else if (row) {
+							matrix += `<td><button class="sw-sku sw-sku-gen" data-colour="${frappe.utils.escape_html(ccode)}" data-size="${frappe.utils.escape_html(scode)}">+ Generate</button><span class="sw-status">${frappe.utils.escape_html(row.status || "Not Generated")}</span></td>`;
+					} else {
+						matrix += `<td class="sw-empty">—</td>`;
+					}
+				});
+				matrix += `</tr>`;
+			});
+			matrix += `</tbody></table>`;
+		}
+
+		return `
+			<div class="sw-grid3" style="grid-template-columns:240px 240px 1fr">
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Colours</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swAddColour">+ Add</button></div></div>
+					<div class="sw-card-b">
+						${colours.length ? colours.map((c, i) => `
+							<div class="sw-chip-row">
+								${c.swatch ? `<span class="sw-swatch" style="background:${c.swatch}"></span>` : ""}
+								<span>${frappe.utils.escape_html(c.colour_name)}</span>
+								<span class="sw-muted" style="margin-left:auto">${frappe.utils.escape_html(c.colour_code || "")}</span>
+								<span class="sw-pill sw-colour-approve ${c.approved_for_production ? "sw-pill-ok" : "sw-pill-warn"}" data-idx="${i}" title="Click to toggle - required for this colour to appear in the matrix and count toward BOM/SKU generation">${c.approved_for_production ? "Approved" : "Not approved ⚠"}</span>
+								<span class="sw-x" data-idx="${i}" title="Remove">&times;</span>
+							</div>`).join("") : `<div class="sw-empty">No colours yet.</div>`}
+					</div>
+				</div>
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Sizes</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swAddSize">+ Add</button></div></div>
+					<div class="sw-card-b">
+						${sizes.length ? sizes.map((sz, i) => `
+							<div class="sw-chip-row"><span>${frappe.utils.escape_html(sz.size_code || sz.size)}</span><span class="sw-x" data-idx="${i}" title="Remove" style="margin-left:auto">&times;</span></div>`).join("") : `<div class="sw-empty">No sizes yet.</div>`}
+					</div>
+				</div>
+				<div class="sw-card">
+					<div class="sw-card-h">
+						<h2>Colour × size matrix</h2>
+						<div class="sw-right">
+							${this.generate_bom_button_html("Sampling")}
+							${this.generate_bom_hint_html("Sampling")}
+							<button class="sw-btn sw-btn-pri sw-btn-sm" id="swGenAll">Generate all SKUs</button>
+						</div>
+					</div>
+					<div class="sw-card-b">
+						${matrix}
+						<div class="sw-note" style="margin-top:12px">SKU codes come from the style, colour and size codes. Generation is gated and happens on the Style BOM document (Style Confirmed, PP approved, Lab Dip approved per colourway) - clicking a pending cell takes you there.</div>
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	bind_colours() {
+		const $panels = $(this.wrapper).find("#swPanels");
+		$panels.off();
+		this.bind_generate_bom_button($panels);
+		$panels.find(".sw-sku[data-item]").on("click", (e) => {
+			e.preventDefault();
+			frappe.set_route("Form", "Item", $(e.currentTarget).data("item"));
+		});
+		$panels.find(".sw-sku-gen").on("click", (e) => {
+			this.generate_all_skus();
+		});
+		$panels.find(".sw-matrix-status").on("click", (e) => {
+			const matrix_item = $(e.currentTarget).data("row");
+			const current_status = $(e.currentTarget).text();
+			const dialog = new frappe.ui.Dialog({
+				title: __("Set Matrix Item Status"),
+				fields: [{ fieldname: "status", fieldtype: "Select", label: __("Status"), options: "Active\nDrop\nOn Hold", default: current_status }],
+				primary_action_label: __("Save"),
+				primary_action: (values) => {
+					frappe.call({
+						method: "apparel_erp.product_development.doctype.style.style.set_matrix_item_status",
+						args: { style: this.style.name, matrix_item, status: values.status },
+						callback: () => {
+							dialog.hide();
+							this.load_style(this.style.name);
+						}
+					});
+				}
+			});
+			dialog.show();
+		});
+		$panels.find("#swGenAll").on("click", () => {
+			const pending = (this.style.matrix_items || []).filter(m => m.status !== "Active" || !m.item);
+			if (!pending.length) { sw_toast(this.wrapper, "All SKUs are already generated."); return; }
+			this.generate_all_skus();
+		});
+
+		$panels.find("#swAddColour").on("click", () => this.add_colour());
+		$panels.find("#swAddSize").on("click", () => this.add_size());
+
+		$panels.find(".sw-card:first .sw-x").on("click", (e) => {
+			const idx = $(e.currentTarget).data("idx");
+			const colours = (this.style.colours || []).filter(c => (c.status || "Active") === "Active");
+			const row = colours[idx];
+			frappe.confirm(`Remove colour "${row.colour_name}"? Any SKUs already generated for it are left untouched.`, () => {
+				this.style.colours = this.style.colours.filter(c => c !== row);
+				this.save_and_refresh("colours");
+			});
+		});
+		$panels.find(".sw-colour-approve").on("click", (e) => {
+			const idx = $(e.currentTarget).data("idx");
+			const colours = (this.style.colours || []).filter(c => (c.status || "Active") === "Active");
+			const row = colours[idx];
+			row.approved_for_production = row.approved_for_production ? 0 : 1;
+			this.save_and_refresh("colours");
+		});
+		$panels.find(".sw-card:eq(1) .sw-x").on("click", (e) => {
+			const idx = $(e.currentTarget).data("idx");
+			const row = (this.style.sizes || [])[idx];
+			frappe.confirm(`Remove size "${row.size_code || row.size}"? Any SKUs already generated for it are left untouched.`, () => {
+				this.style.sizes = this.style.sizes.filter(s => s !== row);
+				this.save_and_refresh("colours");
+			});
+		});
+	}
+
+	add_colour() {
+		frappe.prompt(
+			[
+				{ fieldname: "colour_name", label: "Colour Name", fieldtype: "Data", reqd: 1 },
+				{ fieldname: "colour_code", label: "Colour Code", fieldtype: "Data", reqd: 1 },
+				{ fieldname: "swatch", label: "Swatch", fieldtype: "Color" },
+				{ fieldname: "approved_for_production", label: "Approved for Production", fieldtype: "Check", default: 1,
+					description: "Required before this colour gets a row in the Colour x size matrix, or counts toward BOM/SKU generation." }
+			],
+			(values) => {
+				this.style.colours = this.style.colours || [];
+				this.style.colours.push({
+					colour_name: values.colour_name, colour_code: values.colour_code, swatch: values.swatch,
+					approved_for_production: values.approved_for_production ? 1 : 0, status: "Active"
+				});
+				this.save_and_refresh("colours");
+			},
+			"Add colour",
+			"Add"
+		);
+	}
+
+	add_size() {
+		frappe.prompt(
+			[{ fieldname: "size", label: "Size", fieldtype: "Link", options: "Size", reqd: 1 }],
+			(values) => {
+				frappe.db.get_value("Size", values.size, "size_code").then(r => {
+					this.style.sizes = this.style.sizes || [];
+					if (this.style.sizes.some(s => s.size === values.size)) {
+						frappe.show_alert({ message: "That size is already on this style.", indicator: "orange" });
+						return;
+					}
+					this.style.sizes.push({ size: values.size, size_code: (r.message && r.message.size_code) || values.size, sequence: this.style.sizes.length });
+					this.save_and_refresh("colours");
+				});
+			},
+			"Add size",
+			"Add"
+		);
+	}
+
+	// Saves the in-memory this.style (with local edits already applied) back to
+	// the server, reloads it fresh, and switches to the given tab.
+	save_and_refresh(tab) {
+		frappe.dom.freeze("Saving…");
+		frappe.call({
+			method: "frappe.client.save",
+			args: { doc: this.style },
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				sw_toast(this.wrapper, "Saved.");
+				this.load_style(this.style.name);
+				if (tab) setTimeout(() => this.switch_tab(tab), 50);
+			},
+			error: () => frappe.dom.unfreeze()
+		});
+	}
+
+	generate_all_skus() {
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_bom.style_bom.get_workspace_style_bom",
+			args: { style: this.style.name }
+		}).then((r) => {
+			const info = r.message || {};
+
+			if (!info.name || info.inherited_from) {
+				frappe.confirm(
+					"No Style BOM of its own exists for this Style yet. Create one now?",
+					() => frappe.new_doc("Style BOM", { style: this.style.name, bom_type: "Development" })
+				);
+				return;
+			}
+
+			if (info.docstatus !== 1) {
+				frappe.confirm(
+					`The current Style BOM (<b>${frappe.utils.escape_html(info.name)}</b>) is still a Draft - nothing can be generated from it until it's submitted. Open it now to finish and submit?`,
+					() => frappe.set_route("Form", "Style BOM", info.name)
+				);
+				return;
+			}
+
+			if (!info.bom_generation_mode) {
+				this.prompt_bom_generation_mode(info.name, () => this.generate_all_skus());
+				return;
+			}
+
+			// Submitted + mode chosen: the real thing can actually run, right
+			// here - no need to send the user to the Style BOM form at all.
+			frappe.confirm(
+				`Generate production BOMs and SKUs for every Active, Approved-for-Production colourway on ${frappe.utils.escape_html(this.style.style_no || this.style.name)} (mode: <b>${frappe.utils.escape_html(info.bom_generation_mode)}</b>)? Style Stage must be Confirmed first.`,
+				() => {
+					frappe.dom.freeze("Checking gates and generating…");
+					frappe.call({
+						method: "apparel_erp.product_development.doctype.style_bom.style_bom.generate_production_boms",
+						args: { style_bom_name: info.name },
+						callback: (r2) => {
+							frappe.dom.unfreeze();
+							const count = (r2.message || {}).count || 0;
+							sw_toast(this.wrapper, `Generated/confirmed ${count} BOM(s).`);
+							this.load_style(this.style.name);
+							setTimeout(() => this.switch_tab("colours"), 50);
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			);
+		});
+	}
+
+	prompt_bom_generation_mode(style_bom_name, onDone) {
+		const d = new frappe.ui.Dialog({
+			title: "Choose BOM Generation Mode",
+			fields: [{
+				fieldname: "mode",
+				label: "BOM Generation Mode",
+				fieldtype: "Select",
+				options: "Per Colourway (Material-wise)\nPer SKU (Colour x Size)",
+				reqd: 1,
+				description: "Per Colourway: one shared BOM per colour, size-weighted average consumption. Per SKU: one exact BOM per colour x size, using that size's own consumption - plugs directly into the real sellable Item."
+			}],
+			primary_action_label: "Save & continue",
+			primary_action: (values) => {
+				frappe.dom.freeze("Saving…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style_bom.style_bom.set_bom_generation_mode",
+					args: { style_bom_name, mode: values.mode },
+					callback: () => {
+						frappe.dom.unfreeze();
+						d.hide();
+						if (onDone) onDone();
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	// ---------- Order (Buyer PO + Order Matrix) ----------
+	render_order_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading order…</div>`);
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.apparel_order.apparel_order.get_workspace_order",
+			args: { style: this.style.name }
+		}).then((r) => {
+			this.workspace_order = r.message || null;
+			this.order_qty_count = this.workspace_order ? this.workspace_order.total_quantity : 0;
+			$(this.wrapper).find(`#swTabs button[data-t="order"] .sw-count`).remove();
+			if (this.order_qty_count) {
+				$(this.wrapper).find(`#swTabs button[data-t="order"]`).append(`<span class="sw-count">${this.order_qty_count.toLocaleString()}</span>`);
+			}
+			this.paint_order_tab($panels);
+		});
+	}
+
+	paint_order_tab($panels) {
+		const o = this.workspace_order;
+		if (!o) {
+			$panels.html(`
+				<div class="sw-card">
+					<div class="sw-card-b">
+						<div class="sw-empty">No Buyer PO / Order Matrix set up yet for this style.</div>
+						<button class="sw-btn sw-btn-pri sw-btn-sm" id="swCreateOrder" style="margin-top:10px">Set up Buyer PO</button>
+					</div>
+				</div>
+			`);
+			$panels.find("#swCreateOrder").on("click", () => this.prompt_create_order($panels));
+			return;
+		}
+
+		// Pivot the flat colour x size rows into a grid for editing, matching
+		// the worked example table (rows = colours, columns = sizes).
+		const colours = [];
+		const sizes = [];
+		const qtyByKey = {};
+		(o.order_matrix || []).forEach((row) => {
+			const ck = row.colour_code || row.colour_name || "";
+			const sk = row.size_code || "";
+			if (!colours.some(c => c.code === ck)) colours.push({ code: ck, name: row.colour_name || ck });
+			if (!sizes.includes(sk)) sizes.push(sk);
+			qtyByKey[`${ck}::${sk}`] = row.quantity || 0;
+		});
+
+		let colTotal = {};
+		sizes.forEach(sk => { colTotal[sk] = 0; });
+		colours.forEach(c => {
+			sizes.forEach(sk => { colTotal[sk] += qtyByKey[`${c.code}::${sk}`] || 0; });
+		});
+		const grandTotal = Object.values(colTotal).reduce((a, b) => a + b, 0);
+
+		let grid;
+		if (!colours.length || !sizes.length) {
+			grid = `<div class="sw-empty" style="padding:16px">This style has no active colours/sizes yet to build a matrix from. Add them on the Colours &amp; Sizes tab first.</div>`;
+		} else {
+			grid = `<table><thead><tr><th>Colour / Size</th>${sizes.map(sk => `<th class="num">${frappe.utils.escape_html(sk)}</th>`).join("")}<th class="num">Total</th></tr></thead><tbody>`;
+			colours.forEach((c) => {
+				let rowTotal = 0;
+				const cells = sizes.map((sk) => {
+					const qty = qtyByKey[`${c.code}::${sk}`] || 0;
+					rowTotal += qty;
+					return `<td class="num"><input class="sw-cell" data-order-qty data-colour="${frappe.utils.escape_html(c.code)}" data-colour-name="${frappe.utils.escape_html(c.name)}" data-size="${frappe.utils.escape_html(sk)}" type="number" min="0" step="1" value="${qty}" style="width:70px;text-align:right"></td>`;
+				}).join("");
+				grid += `<tr><td>${frappe.utils.escape_html(c.name)}</td>${cells}<td class="num"><b>${rowTotal.toLocaleString()}</b></td></tr>`;
+			});
+			grid += `<tr><td><b>Total</b></td>${sizes.map(sk => `<td class="num"><b>${(colTotal[sk] || 0).toLocaleString()}</b></td>`).join("")}<td class="num"><b>${grandTotal.toLocaleString()}</b></td></tr>`;
+			grid += `</tbody></table>`;
+		}
+
+		const statusCls = { Draft: "pill-mut", Confirmed: "pill-info", "In Production": "pill-warn", Shipped: "pill-ok", Closed: "pill-ok", Cancelled: "pill-bad" }[o.status] || "pill-mut";
+
+		$panels.html(`
+			<div class="sw-card">
+				<div class="sw-card-b">
+					<div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:flex-start">
+						<div>
+							<div style="font-size:15px;font-weight:600">${frappe.utils.escape_html(o.buyer_po)}${o.customer ? ` · ${frappe.utils.escape_html(o.customer)}` : ""}</div>
+							<div style="color:var(--sw-ink-2);font-size:13px;margin-top:2px">${frappe.utils.escape_html(o.incoterm || "")} · ${frappe.utils.escape_html(o.currency || "")}${o.delivery_date ? ` · Delivery ${frappe.datetime.str_to_user(o.delivery_date)}` : ""}</div>
+						</div>
+						<div style="text-align:right">
+							<span class="pill ${statusCls}">${frappe.utils.escape_html(o.status || "Draft")}</span>
+							<div style="font-size:20px;font-weight:600;margin-top:4px">${grandTotal.toLocaleString()} <span style="font-size:12px;font-weight:400;color:var(--sw-ink-2)">pcs</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="sw-card">
+				<div class="sw-card-h">
+					<h2>Order matrix</h2>
+					<div class="right">
+						<span class="sw-note" style="margin-right:8px">Only non-zero cells count as ordered - these drive BOM generation.</span>
+						<button class="sw-btn sw-btn-sm" id="swOpenOrderForm">Open full record</button>
+					</div>
+				</div>
+				${grid}
+				<button class="sw-btn sw-btn-pri" id="swSaveOrder" style="margin:12px 16px">Save order matrix</button>
+			</div>
+		`);
+		this.bind_order_tab($panels);
+	}
+
+	bind_order_tab($panels) {
+		$panels.off();
+		$panels.find("#swOpenOrderForm").on("click", () => {
+			if (this.workspace_order && this.workspace_order.name) {
+				frappe.set_route("Form", "Apparel Order", this.workspace_order.name);
+			}
+		});
+		$panels.find("#swSaveOrder").on("click", () => {
+			const rows = [];
+			$panels.find("[data-order-qty]").each((_, el) => {
+				const $el = $(el);
+				rows.push({
+					colour_code: $el.data("colour"),
+					colour_name: $el.data("colour-name"),
+					size_code: $el.data("size"),
+					quantity: Number($el.val()) || 0
+				});
+			});
+			frappe.dom.freeze("Saving order matrix…");
+			frappe.call({
+				method: "apparel_erp.product_development.doctype.apparel_order.apparel_order.save_workspace_order",
+				args: { style: this.style.name, payload: JSON.stringify({ order_matrix: rows }) },
+				callback: (r) => {
+					frappe.dom.unfreeze();
+					this.workspace_order = r.message;
+					this.order_qty_count = this.workspace_order.total_quantity;
+					this.paint_order_tab($panels);
+					sw_toast(this.wrapper, "Order matrix saved.");
+				},
+				error: () => frappe.dom.unfreeze()
+			});
+		});
+	}
+
+	prompt_create_order($panels) {
+		const d = new frappe.ui.Dialog({
+			title: "Set up Buyer PO",
+			fields: [
+				{ fieldname: "buyer_po", label: "Buyer PO", fieldtype: "Data", reqd: 1 },
+				{ fieldname: "customer", label: "Customer / Buyer", fieldtype: "Data" },
+				{ fieldname: "currency", label: "Currency", fieldtype: "Data", default: "INR" },
+				{ fieldname: "incoterm", label: "Incoterm", fieldtype: "Data", default: "FOB" },
+				{ fieldname: "delivery_date", label: "Delivery / Ex-factory Date", fieldtype: "Date" }
+			],
+			primary_action_label: "Create",
+			primary_action: (values) => {
+				frappe.dom.freeze("Creating…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.apparel_order.apparel_order.create_workspace_order",
+					args: { style: this.style.name, payload: JSON.stringify(values) },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_order = r.message;
+						this.order_qty_count = this.workspace_order.total_quantity;
+						this.paint_order_tab($panels);
+						sw_toast(this.wrapper, "Buyer PO created — fill in the order matrix and save.");
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	// ---------- Style BOM ----------
+	render_bom_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading Style BOM…</div>`);
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_bom.style_bom.get_workspace_style_bom",
+			args: { style: this.style.name }
+		}).then((r) => {
+			this.workspace_bom = r.message || {};
+			this.paint_bom_tab($panels);
+		});
+	}
+
+	paint_bom_tab($panels) {
+		const bom = this.workspace_bom || {};
+		const editable = !!bom.editable;
+		const sections = ["Fabric", "Trim", "Packing", "Value-add"];
+		const lines = bom.lines || [];
+		const grouped = sections.map((sec) => ({
+			sec,
+			rows: lines.filter((l) => (l.section || "Fabric") === sec)
+		})).filter((g) => g.rows.length);
+		if (!grouped.length && lines.length) {
+			grouped.push({ sec: "Lines", rows: lines });
+		}
+
+		let lineTbl;
+		if (!lines.length) {
+			lineTbl = `<div class="empty" style="padding:16px">No materials yet. Add items to build the Style BOM rule set.</div>`;
+		} else {
+			lineTbl = `<table><thead><tr>
+				<th style="width:34px">#</th><th>Material</th><th style="width:110px">Rule</th>
+				<th style="width:70px">UOM</th><th class="num" style="width:90px">Base qty</th>
+				<th style="width:100px">Rate</th>${editable ? `<th style="width:36px"></th>` : ""}
+				<th style="width:100px">Supplied by</th>
+			</tr></thead><tbody>`;
+			let n = 0;
+			grouped.forEach((g) => {
+				const label = g.sec === "Trim" ? "Trims" : g.sec === "Packing" ? "Packaging" : g.sec;
+				lineTbl += `<tr class="sw-grp"><td colspan="${editable ? 7 : 6}">${frappe.utils.escape_html(label)}</td></tr>`;
+				g.rows.forEach((l) => {
+					n += 1;
+					const rule = sw_bom_rule(l);
+					const supplied = (l.supplied_by || "Us") === "Job Worker"
+						? `<span class="pill warn">Job worker</span>`
+						: `<span class="pill mut">Us</span>`;
+					lineTbl += `<tr>
+						<td>${n}</td>
+						<td>${frappe.utils.escape_html(l.item_name || l.item || "")}<div class="sw-muted" style="font-size:11px">${frappe.utils.escape_html(l.item || "")}</div></td>
+						<td><span class="pill ${rule.cls}">${rule.label}</span></td>
+						<td>${frappe.utils.escape_html(l.uom || "")}</td>
+						<td class="num">${l.base_consumption != null ? l.base_consumption : ""}</td>
+						${editable ? `<td><input class="sw-cell" data-rate-line="${frappe.utils.escape_html(l.line_id || "")}" type="number" step="0.01" min="0" value="${l.rate || 0}"></td>` : `<td>${l.rate || 0}</td>`}
+						<td>${supplied}</td>
+						${editable ? `<td><span class="sw-x" data-line="${frappe.utils.escape_html(l.line_id || "")}" title="Remove">&times;</span></td>` : ""}
+					</tr>`;
+				});
+			});
+			lineTbl += `</tbody></table>`;
+		}
+
+		$(this.wrapper).find("#swTabs button[data-t=\"bom\"]").html(
+			`Style BOM${lines.length ? `<span class="sw-count">${lines.length}</span>` : ""}`
+		);
+
+		const fabricLine = lines.find((l) => l.section === "Fabric") || lines[0];
+		const baseFabric = fabricLine ? Number(fabricLine.base_consumption) || 0 : 0;
+		const sizes = bom.sizes || this.style.sizes || [];
+		const factorRows = sizes.length
+			? sizes.map((sz, i) => {
+				const factor = Number(sz.consumption_factor != null ? sz.consumption_factor : 1) || 1;
+				const code = sz.size_code || sz.size;
+				return `<tr>
+					<td>${frappe.utils.escape_html(code)}</td>
+					<td class="num">${editable
+						? `<input class="sw-cell" data-factor-idx="${i}" type="number" step="0.001" min="0" value="${factor}">`
+						: factor.toFixed(2)}</td>
+					<td class="num">${(baseFabric * factor).toFixed(2)}</td>
+				</tr>`;
+			}).join("")
+			: `<tr><td colspan="3" class="empty">No sizes on this style</td></tr>`;
+
+		const lineById = {};
+		lines.forEach((l) => { lineById[l.line_id] = l; });
+		const overrides = bom.overrides || [];
+		const overrideRows = overrides.length
+			? overrides.map((o, i) => {
+				const line = lineById[o.line_id] || {};
+				const applies = [o.colourway || "All", o.size || "all sizes"].join(" · ");
+				const itemLabel = o.item_code
+					? `${line.item_name || line.item || ""} → ${o.item_name || o.item_code}`
+					: (line.item_name || line.item || o.line_id || "");
+				return `<tr>
+					<td>${frappe.utils.escape_html(applies)}</td>
+					<td>${frappe.utils.escape_html(itemLabel)}</td>
+					<td class="num">${o.consumption != null && o.consumption !== "" ? o.consumption : "—"}</td>
+					${editable ? `<td><span class="sw-x" data-override-idx="${i}" title="Remove">&times;</span></td>` : ""}
+				</tr>`;
+			}).join("")
+			: `<tr><td colspan="${editable ? 4 : 3}" class="empty">No exceptions</td></tr>`;
+
+		const titleBits = bom.name
+			? `${frappe.utils.escape_html(bom.name)} — ${bom.docstatus === 1 ? "Rev " + (bom.version || 1) : "Draft"}`
+			: "Style BOM — base";
+		const typePill = `<span class="sw-pill ${bom.bom_type === "Bulk" ? "" : "sw-pill-mut"}">${frappe.utils.escape_html(bom.bom_type || "Development")}</span>`;
+		const inherited = bom.inherited_from
+			? `<div class="sw-note" style="margin:12px 16px 0">Inherited from Base Style <b>${frappe.utils.escape_html(bom.inherited_from)}</b>. Create this style’s own copy to edit.</div>`
+			: "";
+		const locked = bom.docstatus === 1
+			? `<div class="sw-note" style="margin:12px 16px 0">Submitted Style BOMs are read-only. Amend the document to change materials.</div>`
+			: "";
+
+		$panels.html(`
+			<div class="sw-grid2" style="grid-template-columns:1.55fr 1fr">
+				<div class="sw-card">
+					<div class="sw-card-h">
+						<h2>${titleBits}</h2>
+						<div class="right">
+							${typePill}
+							${editable ? `<button class="sw-btn sw-btn-sm" id="swAddBomItem">+ Add item</button>` : ""}
+							${bom.name ? `<button class="sw-btn sw-btn-sm" id="swOpenBomForm">Open form</button>` : ""}
+						</div>
+					</div>
+					${inherited}${locked}
+					${lineTbl}
+					<div class="sw-card-b">
+						<div class="note">This is a <b>Style BOM rule set</b>, not an ERPNext manufacturing BOM. Colour selects the material Item; size selects the quantity. The BOM Generator resolves both only after release.</div>
+						${editable ? `<button class="sw-btn sw-btn-pri" id="swSaveBom" style="margin-top:12px">Save Style BOM</button>` : ""}
+						${bom.inherited_from ? `<button class="sw-btn sw-btn-pri" id="swForkBom" style="margin-top:12px">Create this style’s BOM</button>` : ""}
+					</div>
+				</div>
+				<div>
+					<div class="card">
+						<div class="card-h"><h2>Size consumption factors</h2></div>
+						<table>
+							<thead><tr><th>Size</th><th class="num">Factor</th><th class="num">Fabric</th></tr></thead>
+							<tbody>${factorRows}</tbody>
+						</table>
+					</div>
+					<div class="card">
+						<div class="card-h">
+							<h2>Exceptions</h2>
+							<div class="sw-right">${editable ? `<button class="sw-btn sw-btn-sm" id="swAddOverride">+ Add</button>` : ""}</div>
+						</div>
+						<table>
+							<thead><tr><th>Applies to</th><th>Item</th><th class="num">Override</th>${editable ? `<th></th>` : ""}</tr></thead>
+							<tbody>${overrideRows}</tbody>
+						</table>
+						<div class="card-b"><div class="note">Exceptions override the calculated quantity or item for specific colour or size combinations.</div></div>
+					</div>
+				</div>
+			</div>
+		`);
+		this.bind_bom_tab($panels);
+	}
+
+	bind_bom_tab($panels) {
+		$panels.off();
+		$panels.find("#swOpenBomForm").on("click", () => {
+			if (this.workspace_bom && this.workspace_bom.name) {
+				frappe.set_route("Form", "Style BOM", this.workspace_bom.name);
+			}
+		});
+		$panels.find("#swForkBom").on("click", () => {
+			frappe.dom.freeze("Copying Style BOM…");
+			frappe.call({
+				method: "apparel_erp.product_development.doctype.style_bom.style_bom.fork_inherited_style_bom",
+				args: { style: this.style.name },
+				callback: (r) => {
+					frappe.dom.unfreeze();
+					this.workspace_bom = r.message;
+					this.paint_bom_tab($panels);
+					sw_toast(this.wrapper, "Copied. This style now has its own draft Style BOM.");
+				},
+				error: () => frappe.dom.unfreeze()
+			});
+		});
+		$panels.find("#swAddBomItem").on("click", () => this.prompt_add_bom_item($panels));
+		$panels.find("#swAddOverride").on("click", () => this.prompt_add_bom_override($panels));
+		$panels.find(".sw-x[data-line]").on("click", (e) => {
+			this.sync_size_factors($panels);
+			const id = $(e.currentTarget).data("line");
+			this.workspace_bom.lines = (this.workspace_bom.lines || []).filter((l) => l.line_id !== id);
+			this.workspace_bom.overrides = (this.workspace_bom.overrides || []).filter((o) => o.line_id !== id);
+			this.paint_bom_tab($panels);
+		});
+		$panels.find("[data-override-idx]").on("click", (e) => {
+			this.sync_size_factors($panels);
+			const idx = Number($(e.currentTarget).data("override-idx"));
+			(this.workspace_bom.overrides || []).splice(idx, 1);
+			this.paint_bom_tab($panels);
+		});
+		$panels.find("#swSaveBom").on("click", () => this.save_workspace_bom($panels));
+	}
+
+	sync_size_factors($panels) {
+		const bom = this.workspace_bom;
+		if (!bom || !bom.sizes) return;
+		bom.sizes.forEach((sz, i) => {
+			const $inp = $panels.find(`[data-factor-idx="${i}"]`);
+			if ($inp.length) sz.consumption_factor = Number($inp.val());
+		});
+	}
+
+collect_bom_payload($panels) {
+		this.sync_size_factors($panels);
+		const bom = this.workspace_bom || {};
+		const size_factors = (bom.sizes || []).map((sz, i) => {
+			const $inp = $panels.find(`[data-factor-idx="${i}"]`);
+			return {
+				size_code: sz.size_code || sz.size,
+				consumption_factor: $inp.length ? Number($inp.val()) : (sz.consumption_factor != null ? sz.consumption_factor : 1)
+			};
+		});
+		// Merge each Rate cell's current value back onto its line, matched by
+		// line_id (not row position - grouping/reordering can change that).
+		// Previously the typed value was only collected into a separate
+		// `rates` array that neither this payload's `lines` nor the server
+		// ever read, so price edits here never actually saved.
+		const lines = (bom.lines || []).map((l) => {
+			const $inp = $panels.find(`[data-rate-line="${l.line_id}"]`);
+			return $inp.length ? { ...l, rate: Number($inp.val()) || 0 } : l;
+		});
+		return {
+			bom_type: bom.bom_type || "Development",
+			lines,
+			overrides: bom.overrides || [],
+			size_factors
+		};
+	}
+
+	save_workspace_bom($panels) {
+		frappe.dom.freeze("Saving Style BOM…");
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_bom.style_bom.save_workspace_style_bom",
+			args: { style: this.style.name, payload: JSON.stringify(this.collect_bom_payload($panels)) },
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				this.workspace_bom = r.message;
+				frappe.call({ method: "frappe.client.get", args: { doctype: "Style", name: this.style.name } }).then((sr) => {
+					this.style = sr.message;
+					this.paint_bom_tab($(this.wrapper).find("#swPanels"));
+					sw_toast(this.wrapper, "Style BOM saved.");
+				});
+			},
+			error: () => frappe.dom.unfreeze()
+		});
+	}
+
+	prompt_add_bom_item($panels) {
+		const d = new frappe.ui.Dialog({
+			title: "Add Style BOM item",
+			fields: [
+				{ fieldname: "item", label: "Item", fieldtype: "Link", options: "Item", reqd: 1 },
+				{ fieldname: "section", label: "Section", fieldtype: "Select", options: "Fabric\nTrim\nPacking\nValue-add", default: "Fabric", reqd: 1 },
+				{ fieldname: "uom", label: "UOM", fieldtype: "Link", options: "UOM", reqd: 1 },
+				{ fieldname: "base_consumption", label: "Base qty", fieldtype: "Float", reqd: 1 },
+				{ fieldname: "rule", label: "Rule", fieldtype: "Select", options: "Common\nColour\nSize\nColour × size", default: "Common" },
+				{ fieldname: "supplied_by", label: "Supplied by", fieldtype: "Select", options: "Us\nJob Worker", default: "Us" }
+			],
+			primary_action_label: "Add",
+			primary_action: (values) => {
+				this.sync_size_factors($panels);
+				const flags = sw_rule_to_flags(values.rule);
+				this.workspace_bom.lines = this.workspace_bom.lines || [];
+				this.workspace_bom.lines.push({
+					line_id: "tmp-" + frappe.utils.get_random(8),
+					item: values.item,
+					item_name: values.item,
+					section: values.section,
+					uom: values.uom,
+					base_consumption: values.base_consumption,
+					supplied_by: values.supplied_by,
+					...flags
+				});
+				frappe.db.get_value("Item", values.item, "item_name").then((r) => {
+					const last = this.workspace_bom.lines[this.workspace_bom.lines.length - 1];
+					if (r.message && r.message.item_name) last.item_name = r.message.item_name;
+					this.paint_bom_tab($panels);
+				});
+				d.hide();
+			}
+		});
+		d.fields_dict.item.df.onchange = () => {
+			const item = d.get_value("item");
+			if (!item) return;
+			frappe.db.get_value("Item", item, "stock_uom").then((r) => {
+				if (r.message && r.message.stock_uom && !d.get_value("uom")) {
+					d.set_value("uom", r.message.stock_uom);
+				}
+			});
+		};
+		d.show();
+	}
+
+	prompt_add_bom_override($panels) {
+		const lines = this.workspace_bom.lines || [];
+		if (!lines.length) {
+			frappe.show_alert({ message: "Add BOM items first.", indicator: "orange" });
+			return;
+		}
+		const line_options = lines.map((l) => l.line_id).join("\n");
+		const colour_options = ["", ...((this.style.colours || []).map((c) => c.colour_code || c.colour_name))].join("\n");
+		const size_options = ["", ...((this.style.sizes || []).map((s) => s.size_code || s.size))].join("\n");
+		const d = new frappe.ui.Dialog({
+			title: "Add exception",
+			fields: [
+				{ fieldname: "line_id", label: "BOM line", fieldtype: "Select", options: line_options, reqd: 1 },
+				{ fieldname: "colourway", label: "Colourway (blank = all)", fieldtype: "Select", options: colour_options },
+				{ fieldname: "size", label: "Size (blank = all)", fieldtype: "Select", options: size_options },
+				{ fieldname: "item_code", label: "Override item", fieldtype: "Link", options: "Item" },
+				{ fieldname: "consumption", label: "Override qty", fieldtype: "Float" }
+			],
+			primary_action_label: "Add",
+			primary_action: (values) => {
+				this.sync_size_factors($panels);
+				this.workspace_bom.overrides = this.workspace_bom.overrides || [];
+				const line = lines.find((l) => l.line_id === values.line_id) || {};
+				this.workspace_bom.overrides.push({
+					line_id: values.line_id,
+					colourway: values.colourway,
+					size: values.size,
+					item_code: values.item_code,
+					item_name: values.item_code,
+					consumption: values.consumption
+				});
+				d.hide();
+				this.paint_bom_tab($panels);
+			}
+		});
+		d.fields_dict.line_id.df.formatter = (value) => {
+			const line = lines.find((l) => l.line_id === value);
+			return line ? (line.item_name || line.item) : value;
+		};
+		d.show();
+		const $sel = d.fields_dict.line_id.$input;
+		if ($sel && $sel.length) {
+			$sel.find("option").each(function () {
+				const val = $(this).attr("value");
+				const line = lines.find((l) => l.line_id === val);
+				if (line) $(this).text(line.item_name || line.item || val);
+			});
+		}
+	}
+
+	// ---------- Costing ----------
+	render_costing_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading costing…</div>`);
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_cost_sheet.style_cost_sheet.get_workspace_cost_sheet",
+			args: { style: this.style.name }
+		}).then((r) => {
+			this.workspace_cost = r.message || {};
+			this.paint_costing_tab($panels);
+		});
+	}
+
+	paint_costing_tab($panels) {
+		const c = this.workspace_cost || {};
+		const editable = c.editable !== false;
+		const cur = c.currency === "USD" ? "$" : "₹";
+		const fmt = (n) => cur + Number(n || 0).toFixed(2);
+		const bomLabel = c.bom
+			? (c.bom.docstatus === 1 ? `Rev ${String(c.bom.version || 1).padStart(2, "0")}` : "Draft")
+			: "—";
+		const tpLabel = c.tech_pack ? `v${c.tech_pack.version}` : "—";
+		const revLabel = c.revision ? String(c.revision).padStart(2, "0") : "draft";
+		const workflowState = c.workflow_state || (c.docstatus === 1 ? "Submitted" : "Draft");
+		const statusPillClass = workflowState === "Approved" ? "pill-ok" : (workflowState === "Submitted" ? "pill-info" : "pill-warn");
+		const statusLabel = workflowState === "Approved" ? "Approved" : (workflowState === "Submitted" ? "Submitted — awaiting approval" : "Draft");
+		const status = `<span class="pill ${statusPillClass}" id="swCostStatus">${statusLabel}</span>`;
+		const fabricBasis = c.fabric_qty
+			? `${Number(c.fabric_qty).toFixed(2)} × ${fmt(c.fabric_rate)}`
+			: "Style BOM fabric lines";
+		const selling = Number(c.selling_price || 0);
+		const target = Number(c.buyer_target || 0);
+		const gapHtml = gap_pill_html(fmt, selling, target);
+
+$panels.html(`
+			<div class="sw-grid2" style="grid-template-columns:1.6fr 1fr">
+				<div class="card">
+					<div class="card-h">
+						<h2>Style cost sheet — revision ${revLabel}</h2>
+						<div class="right">
+							${status}
+							${editable ? `<button class="sw-btn sw-btn-sm" id="swRecalcCost">Recalculate</button>` : ""}
+						</div>
+					</div>
+					<table>
+						<thead><tr><th>Cost head</th><th>Basis</th><th class="num">Rate</th><th class="num">Amount / pc</th></tr></thead>
+						<tbody>
+							<tr><td>Main fabric</td><td>${frappe.utils.escape_html(fabricBasis)}</td><td class="num">${c.fabric_rate ? fmt(c.fabric_rate) + " / uom" : "—"}</td><td class="num">${fmt(c.fabric_amount)}</td></tr>
+							<tr><td>Trims & packing</td><td>Style BOM ${frappe.utils.escape_html(bomLabel)}</td><td class="num">${editable ? `<a href="#" id="swEditBomRate">Edit in Style BOM →</a>` : "—"}</td><td class="num">${fmt(c.trims_amount)}</td></tr>
+							<tr><td>Cut, make & trim</td><td>Approved service rate</td><td class="num">${fmt(c.cmt_rate)} / pc</td><td class="num" id="swCmtAmount">${fmt(c.cmt_amount)}</td></tr>
+							<tr><td>Testing & logistics</td><td>Allocated per piece</td><td class="num">—</td><td class="num" id="swTestingAmount">${fmt(c.testing_amount)}</td></tr>
+							<tr><td>Extra items</td><td><span id="swExtraCount">${(c.extra_items || []).length}</span> item(s) added below</td><td class="num">—</td><td class="num" id="swExtraTotalAmount">${fmt(c.extra_items_amount)}</td></tr>
+							<tr><td>Overhead</td><td>${Number(c.overhead_pct || 0)}% of direct cost</td><td class="num">${Number(c.overhead_pct || 0)}%</td><td class="num" id="swOverheadAmount">${fmt(c.overhead_amount)}</td></tr>
+							<tr><td><b>Total cost</b></td><td></td><td></td><td class="num"><b id="swTotalCost">${fmt(c.total_cost)}</b></td></tr>
+						</tbody>
+					</table>
+					<div class="card-b"><div class="note">Costing reads quantities from the selected <b>Style BOM revision</b>. It does not read or create ERPNext Production BOMs during development.</div></div>
+				</div>
+				<div>
+					<div class="card">
+						<div class="card-h"><h2>Commercial summary</h2></div>
+						<div class="card-b">
+							<div class="f"><label>Currency</label>
+								<select id="swCostCurrency" ${editable ? "" : "disabled"}>
+									<option value="INR" ${c.currency === "INR" ? "selected" : ""}>INR</option>
+									<option value="USD" ${c.currency === "USD" ? "selected" : ""}>USD</option>
+								</select>
+							</div>
+							<div class="f"><label>Target margin %</label>
+								<input id="swMarginPct" type="number" min="0" max="80" value="${c.target_margin != null ? c.target_margin : 18}" ${editable ? "" : "readonly"}>
+							</div>
+							<div class="f"><label>CMT / pc</label>
+								<input id="swCmtRate" type="number" min="0" step="0.01" value="${c.cmt_rate || 0}" ${editable ? "" : "readonly"}>
+							</div>
+							<div class="f"><label>Testing & logistics / pc</label>
+								<input id="swTesting" type="number" min="0" step="0.01" value="${c.testing_logistics || 0}" ${editable ? "" : "readonly"}>
+							</div>
+							<div class="f"><label>Overhead %</label>
+								<input id="swOverheadPct" type="number" min="0" max="100" step="0.1" value="${c.overhead_pct != null ? c.overhead_pct : 8}" ${editable ? "" : "readonly"}>
+							</div>
+							<div class="f"><label>Buyer target</label>
+								<input id="swBuyerTarget" type="number" min="0" step="0.01" value="${c.buyer_target || 0}" ${editable ? "" : "readonly"}>
+							</div>
+							<div class="f" style="margin-top:4px">
+								<label>Extra items</label>
+								<table class="sw-extra-table">
+									<thead><tr><th>#</th><th>Item</th><th>Type</th><th class="num">Rate</th><th class="num">Ref row</th><th class="num">Amount / pc</th><th></th></tr></thead>
+									<tbody id="swExtraItems">${extraItemRows(c.extra_items, editable)}</tbody>
+								</table>
+								${editable ? `<button type="button" class="sw-btn sw-btn-sm" id="swAddExtraItem" style="margin-top:6px">+ Add item</button>` : ""}
+							</div>
+							<div class="attr"><span>Suggested selling price</span><strong id="swSellPrice">${fmt(selling)}</strong></div>
+							<div class="attr"><span>Gap to target</span><span id="swGapWrap">${gapHtml}</span></div>
+						</div>
+					</div>
+					<div class="card">
+						<div class="card-h">
+						<h2>Approval</h2>
+						<div class="right">${this.generate_bom_button_html("Costing")}${this.generate_bom_hint_html("Costing")}</div>
+					</div>
+						<div class="card-b">
+							<div class="attr"><span>Uses Tech Pack</span><span>${frappe.utils.escape_html(tpLabel)}</span></div>
+							<div class="attr"><span>Uses Style BOM</span><span>${frappe.utils.escape_html(bomLabel)}</span></div>
+							<div class="attr"><span>Status</span>${status}</div>
+							${editable ? `
+								<button class="sw-btn" id="swSaveCost" style="margin-top:12px">Save costing</button>
+								<button class="sw-btn sw-btn-pri" id="swApproveCost" style="margin-top:8px">Submit costing</button>
+							` : ""}
+							${!editable && workflowState === "Submitted" ? `
+								<div class="note" style="margin-top:12px">Submitted against the Style BOM and tech pack shown above — awaiting final approval.</div>
+								<button class="sw-btn sw-btn-pri" id="swFinalApproveCost" style="margin-top:8px">Approve costing</button>
+								<button class="sw-btn sw-btn-sm" id="swAmendCost" style="margin-top:8px">Start new revision</button>
+							` : ""}
+							${!editable && workflowState === "Approved" ? `
+								<div class="note" style="margin-top:12px">Approved against the Style BOM and tech pack shown above.</div>
+								<button class="sw-btn sw-btn-sm" id="swAmendCost" style="margin-top:8px">Start new revision</button>
+							` : ""}
+							${c.name ? `<button class="sw-btn sw-btn-sm" id="swOpenCostForm" style="margin-top:8px">Open cost sheet</button>` : ""}
+						</div>
+					</div>
+				</div>
+			</div>
+		`);
+		this.bind_costing_tab($panels);
+	}
+
+	collect_cost_payload($panels) {
+		const extra_items = [];
+		$panels.find(".sw-extra-row").each((_, el) => {
+			const $row = $(el);
+			const label = ($row.find(".sw-extra-label").val() || "").trim();
+			if (!label) return;
+			extra_items.push({
+				label,
+				charge_type: $row.find(".sw-extra-type").val() || "Actual",
+				rate: Number($row.find(".sw-extra-rate").val()) || 0,
+				row_id: Number($row.find(".sw-extra-rowid").val()) || null,
+				amount: Number($row.find(".sw-extra-amount").val()) || 0
+			});
+		});
+		return {
+			currency: $panels.find("#swCostCurrency").val(),
+			target_margin: Number($panels.find("#swMarginPct").val()),
+			cmt_rate: Number($panels.find("#swCmtRate").val()),
+			testing_logistics: Number($panels.find("#swTesting").val()),
+			overhead_pct: Number($panels.find("#swOverheadPct").val()),
+			buyer_target: Number($panels.find("#swBuyerTarget").val()),
+			extra_items
+		};
+	}
+
+	bind_costing_tab($panels) {
+		$panels.off();
+		this.bind_generate_bom_button($panels);
+		// Extra commercial line items: "+ Add item" appends a blank editable
+		// row client-side only (no server round trip needed just to add a
+		// row); Save/Recalculate below picks up whatever rows are currently
+		// in the DOM via collect_cost_payload and persists the whole set.
+		$panels.find("#swAddExtraItem").on("click", () => {
+			const rowNumber = $panels.find(".sw-extra-row").length + 1;
+			$panels.find("#swExtraItems").append(extraItemRowHtml({ label: "", charge_type: "Actual", amount: 0 }, true, rowNumber));
+			this.recalc_costing_preview($panels);
+		});
+		$panels.on("click", ".sw-extra-remove", (e) => {
+			$(e.currentTarget).closest(".sw-extra-row").remove();
+			renumberExtraRows($panels);
+			this.recalc_costing_preview($panels);
+		});
+		// Changing a row's Type toggles which inputs are relevant (Rate for
+		// anything but Actual, Reference Row only for the two "Previous
+		// Row" types) and whether Amount is user-typed or computed.
+		$panels.on("change", ".sw-extra-type", (e) => {
+			const $row = $(e.currentTarget).closest(".sw-extra-row");
+			const type = $(e.currentTarget).val();
+			const needsRate = type !== "Actual";
+			const needsRowRef = type === "On Previous Row Amount" || type === "On Previous Row Total";
+			$row.find(".sw-extra-rate").css("visibility", needsRate ? "visible" : "hidden");
+			$row.find(".sw-extra-rowid").css("visibility", needsRowRef ? "visible" : "hidden");
+			$row.find(".sw-extra-amount").prop("readonly", needsRate);
+			this.recalc_costing_preview($panels);
+		});
+		// Live preview: every commercial input, and every extra item row,
+		// recomputes Overhead/Total/Selling price/Gap instantly in the UI -
+		// Save/Recalculate is still what persists it to the Style Cost
+		// Sheet, but the numbers on screen no longer wait for a round trip
+		// to reflect what's been typed.
+		$panels.on("input", "#swCmtRate, #swTesting, #swOverheadPct, #swMarginPct, #swBuyerTarget, .sw-extra-amount, .sw-extra-label, .sw-extra-rate, .sw-extra-rowid", () => {
+			this.recalc_costing_preview($panels);
+		});
+		// Trim/packing prices always live on the Style BOM - editing them
+		// here was silently discarded (see style_bom.js history), so always
+		// send the user to the Style BOM tab, the single source of truth.
+		$panels.find("#swEditBomRate").on("click", (e) => {
+			e.preventDefault();
+			this.switch_tab("bom");
+		});
+		$panels.find("#swOpenCostForm").on("click", () => {
+			if (this.workspace_cost && this.workspace_cost.name) {
+				frappe.set_route("Form", "Style Cost Sheet", this.workspace_cost.name);
+			}
+		});
+		$panels.find("#swRecalcCost, #swSaveCost").on("click", () => {
+			frappe.dom.freeze("Saving costing…");
+			frappe.call({
+				method: "apparel_erp.product_development.doctype.style_cost_sheet.style_cost_sheet.save_workspace_cost_sheet",
+				args: { style: this.style.name, payload: JSON.stringify(this.collect_cost_payload($panels)) },
+				callback: (r) => {
+					frappe.dom.unfreeze();
+					this.workspace_cost = r.message;
+					this.paint_costing_tab($(this.wrapper).find("#swPanels"));
+					sw_toast(this.wrapper, "Cost recalculated from the Style BOM.");
+				},
+				error: () => frappe.dom.unfreeze()
+			});
+		});
+		$panels.find("#swApproveCost").on("click", () => {
+			frappe.confirm("Submit this costing against the current tech pack and Style BOM? It will move to Submitted, awaiting a separate approval.", () => {
+				frappe.dom.freeze("Submitting costing…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style_cost_sheet.style_cost_sheet.save_workspace_cost_sheet",
+					args: { style: this.style.name, payload: JSON.stringify(this.collect_cost_payload($panels)) },
+					callback: () => {
+						frappe.call({
+							method: "apparel_erp.product_development.doctype.style_cost_sheet.style_cost_sheet.approve_workspace_cost_sheet",
+							args: { style: this.style.name },
+							callback: (r) => {
+								frappe.dom.unfreeze();
+								this.workspace_cost = r.message;
+								this.paint_costing_tab($(this.wrapper).find("#swPanels"));
+								sw_toast(this.wrapper, "Costing submitted — awaiting approval.");
+							},
+							error: () => frappe.dom.unfreeze()
+						});
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			});
+		});
+		$panels.find("#swFinalApproveCost").on("click", () => {
+			frappe.confirm("Approve this submitted costing?", () => {
+				frappe.dom.freeze("Approving costing…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style_cost_sheet.style_cost_sheet.approve_workspace_cost_sheet_final",
+					args: { style: this.style.name },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						this.workspace_cost = r.message;
+						this.paint_costing_tab($(this.wrapper).find("#swPanels"));
+						sw_toast(this.wrapper, "Costing approved.");
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			});
+		});
+		$panels.find("#swAmendCost").on("click", () => {
+			frappe.confirm(
+				"Start a new draft revision of this costing? The current revision stays as a permanent, read-only record.",
+				() => {
+					frappe.dom.freeze("Creating new revision…");
+					frappe.call({
+						method: "apparel_erp.product_development.doctype.style_cost_sheet.style_cost_sheet.amend_workspace_cost_sheet",
+						args: { style: this.style.name },
+						callback: (r) => {
+							frappe.dom.unfreeze();
+							this.workspace_cost = r.message;
+							this.paint_costing_tab($(this.wrapper).find("#swPanels"));
+							sw_toast(this.wrapper, "New draft revision created — edit and submit when ready.");
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			);
+		});
+	}
+
+	recalc_costing_preview($panels) {
+		// Mirrors compute_cost_amounts() in style_cost_sheet.py exactly, so
+		// what's shown here before Save matches what the server will store
+		// after Save. fabric/trims stay fixed (they come from the Style
+		// BOM, not from anything editable in this card); everything else
+		// is read straight from the current inputs and extra item rows.
+		const c = this.workspace_cost || {};
+		const cur = c.currency === "USD" ? "$" : "₹";
+		const fmt = (n) => cur + Number(n || 0).toFixed(2);
+
+		const fabric = Number(c.fabric_amount) || 0;
+		const trims = Number(c.trims_amount) || 0;
+		const cmt = Number($panels.find("#swCmtRate").val()) || 0;
+		const testing = Number($panels.find("#swTesting").val()) || 0;
+		const netTotal = fabric + trims + cmt + testing;
+
+		// Mirrors compute_extra_item_amounts() in style_cost_sheet.py row by
+		// row, top to bottom, so a row can only ever reference one above it.
+		const resolved = [];
+		const runningTotals = [];
+		let running = netTotal;
+		let extraCount = 0;
+		$panels.find(".sw-extra-row").each((idx, el) => {
+			const $row = $(el);
+			const label = ($row.find(".sw-extra-label").val() || "").trim();
+			const chargeType = $row.find(".sw-extra-type").val() || "Actual";
+			const rate = Number($row.find(".sw-extra-rate").val()) || 0;
+			const rowId = Number($row.find(".sw-extra-rowid").val()) || 0;
+			let amount = 0;
+			if (label) {
+				extraCount++;
+				if (chargeType === "On Net Total") {
+					amount = netTotal * rate / 100.0;
+				} else if (chargeType === "On Item Quantity") {
+					amount = rate;
+				} else if (chargeType === "On Previous Row Amount" || chargeType === "On Previous Row Total") {
+					const refIdx = rowId - 1;
+					if (refIdx >= 0 && refIdx < idx) {
+						const base = chargeType === "On Previous Row Amount" ? resolved[refIdx] : runningTotals[refIdx];
+						amount = (base || 0) * rate / 100.0;
+					}
+				} else {
+					amount = Number($row.find(".sw-extra-amount").val()) || 0;
+				}
+				if (chargeType !== "Actual") {
+					$row.find(".sw-extra-amount").val(amount ? amount.toFixed(2) : "0.00");
+				}
+			}
+			resolved.push(amount);
+			running += amount;
+			runningTotals.push(running);
+		});
+		const extraTotal = resolved.reduce((a, b) => a + b, 0);
+
+		const overheadPct = Number($panels.find("#swOverheadPct").val()) || 0;
+		const overhead = (netTotal + extraTotal) * overheadPct / 100.0;
+		const total = netTotal + extraTotal + overhead;
+		const margin = Number($panels.find("#swMarginPct").val()) || 0;
+		const selling = margin < 100 ? total / (1 - margin / 100.0) : total;
+		const target = Number($panels.find("#swBuyerTarget").val()) || 0;
+
+		$panels.find("#swCmtAmount").text(fmt(cmt));
+		$panels.find("#swTestingAmount").text(fmt(testing));
+		$panels.find("#swExtraCount").text(extraCount);
+		$panels.find("#swExtraTotalAmount").text(fmt(extraTotal));
+		$panels.find("#swOverheadAmount").text(fmt(overhead));
+		$panels.find("#swTotalCost").text(fmt(total));
+		$panels.find("#swSellPrice").text(fmt(selling));
+		$panels.find("#swGapWrap").html(gap_pill_html(fmt, selling, target));
+	}
+
+	// ---------- Tech pack ----------
+	open_tech_pack() {
+		frappe.db.get_value("Design Tech Pack", { style: this.style.name }, "name").then(r => {
+			if (r.message && r.message.name) {
+				frappe.set_route("Form", "Design Tech Pack", r.message.name);
+			} else {
+				frappe.new_doc("Design Tech Pack", { style: this.style.name });
+			}
+		});
+	}
+
+	// ---------- Production BOM ----------
+	render_prodbom_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading production BOMs…</div>`);
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_bom.style_bom.get_workspace_production_boms",
+			args: { style: this.style.name }
+		}).then((r) => {
+			this.workspace_prodbom = r.message || { style_bom: null, boms: [] };
+			this.prodbom_count = (this.workspace_prodbom.boms || []).length;
+			$(this.wrapper).find(`#swTabs button[data-t="prodbom"] .sw-count`).remove();
+			if (this.prodbom_count) {
+				$(this.wrapper).find(`#swTabs button[data-t="prodbom"]`).append(`<span class="sw-count">${this.prodbom_count}</span>`);
+			}
+			this.paint_prodbom_tab($panels);
+		});
+	}
+
+	paint_prodbom_tab($panels) {
+		const data = this.workspace_prodbom || { style_bom: null, boms: [] };
+		const sb = data.style_bom;
+		const boms = data.boms || [];
+
+		const modeLabel = sb && sb.bom_generation_mode ? sb.bom_generation_mode : null;
+		const genButtonHtml = !sb
+			? `<span class="sw-pill sw-pill-mut">No submitted Style BOM yet</span>`
+			: !modeLabel
+				? `<button class="sw-btn sw-btn-sm" id="swSetProdBomMode">Choose generation mode…</button>`
+				: `<button class="sw-btn sw-btn-pri sw-btn-sm" id="swGenerateProdBoms">Generate production BOMs</button>`;
+
+		const statusPill = (bom) => {
+			if (bom.docstatus === 2) return `<span class="sw-pill sw-pill-bad">Cancelled</span>`;
+			if (bom.docstatus === 1) return `<span class="sw-pill sw-pill-ok">Submitted${bom.is_active ? "" : " · inactive"}</span>`;
+			return `<span class="sw-pill sw-pill-mut">Draft</span>`;
+		};
+
+		const rows = boms.length
+			? boms.map(bom => `
+				<tr>
+					<td>${frappe.utils.escape_html(bom.custom_colourway || "—")}</td>
+					<td>${frappe.utils.escape_html(bom.custom_size || "—")}</td>
+					<td><a href="#" class="sw-prodbom-open" data-bom="${frappe.utils.escape_html(bom.name)}">${frappe.utils.escape_html(bom.item || "")}</a><div class="sw-muted-sm">${frappe.utils.escape_html(bom.item_name || "")}</div></td>
+					<td>${statusPill(bom)}</td>
+					<td class="num">${bom.total_cost != null ? frappe.format(bom.total_cost, { fieldtype: "Currency" }) : "—"}</td>
+					<td>${frappe.datetime.str_to_user(bom.creation)}</td>
+					<td><a href="#" class="sw-prodbom-open" data-bom="${frappe.utils.escape_html(bom.name)}">Open →</a></td>
+				</tr>`).join("")
+			: `<tr><td colspan="7" class="sw-empty">No production BOMs generated yet.</td></tr>`;
+
+		$panels.html(`
+			<div class="sw-card">
+				<div class="sw-card-h">
+					<h2>Production BOMs</h2>
+					<div class="right">
+						${sb ? `<span class="sw-pill sw-pill-mut">Style BOM v${sb.version} (${sb.bom_type})${modeLabel ? " · " + modeLabel : ""}</span>` : ""}
+						${genButtonHtml}
+					</div>
+				</div>
+				<div class="sw-card-b">
+					<table class="sw-prodbom-table">
+						<thead><tr><th>Colourway</th><th>Size</th><th>Item</th><th>Status</th><th class="num">Total cost</th><th>Created</th><th></th></tr></thead>
+						<tbody>${rows}</tbody>
+					</table>
+				</div>
+			</div>
+		`);
+		this.bind_prodbom_tab($panels);
+	}
+
+	bind_prodbom_tab($panels) {
+		$panels.off();
+		// Real BOM document navigation, not a hardcoded URL - frappe.set_route
+		// resolves to whatever this site's actual desk path is (/app, /desk,
+		// whatever), and checking existence first means a BOM that's since
+		// been renamed/cancelled/deleted shows a clear message instead of
+		// Frappe's generic "Page bom not found" 404.
+		$panels.on("click", ".sw-prodbom-open", (e) => {
+			e.preventDefault();
+			const bom_name = $(e.currentTarget).data("bom");
+			if (!bom_name) return;
+			frappe.db.exists("BOM", bom_name).then((exists) => {
+				if (exists) {
+					frappe.set_route("Form", "BOM", bom_name);
+				} else {
+					frappe.show_alert({
+						message: __("{0} no longer exists - it may have been renamed, cancelled or deleted since this list was generated. Refresh the tab.", [bom_name]),
+						indicator: "red"
+					});
+				}
+			});
+		});
+		$panels.find("#swSetProdBomMode").on("click", () => {
+			const sb = this.workspace_prodbom.style_bom;
+			const d = new frappe.ui.Dialog({
+				title: "Choose BOM generation mode",
+				fields: [{
+					fieldname: "mode", label: "BOM Generation Mode", fieldtype: "Select",
+					options: "Per Colourway (Material-wise)\nPer SKU (Colour x Size)", reqd: 1,
+					description: "Per Colourway: one shared BOM per colour, size-weighted average consumption. Per SKU: one exact BOM per colour x size, attached to the real SKU Item."
+				}],
+				primary_action_label: "Save",
+				primary_action: (values) => {
+					frappe.dom.freeze("Saving…");
+					frappe.call({
+						method: "apparel_erp.product_development.doctype.style_bom.style_bom.set_bom_generation_mode",
+						args: { style_bom_name: sb.name, mode: values.mode },
+						callback: () => {
+							frappe.dom.unfreeze();
+							d.hide();
+							this.render_prodbom_tab($panels);
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			});
+			d.show();
+		});
+		$panels.find("#swGenerateProdBoms").on("click", () => {
+			const sb = this.workspace_prodbom.style_bom;
+			frappe.confirm(__("Generate production BOMs from Style BOM v{0}? This creates or updates real ERPNext BOMs for every active, approved-for-production colourway.", [sb.version]), () => {
+				frappe.dom.freeze("Generating…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style_bom.style_bom.generate_production_boms",
+					args: { style_bom_name: sb.name },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						sw_toast(this.wrapper, `Generated ${r.message.count} production BOM(s).`);
+						this.render_prodbom_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			});
+		});
+	}
+
+	// ---------- Sampling ----------
+	render_sampling_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading sampling…</div>`);
+		frappe.call({
+			method: "apparel_erp.product_development.sampling.get_workspace_sampling",
+			args: { style: this.style.name }
+		}).then((r) => {
+			this.workspace_sampling = r.message || null;
+			this.sampling_count = this.workspace_sampling ? (this.workspace_sampling.stages || []).length : 0;
+			$(this.wrapper).find(`#swTabs button[data-t="sampling"] .sw-count`).remove();
+			if (this.sampling_count) {
+				$(this.wrapper).find(`#swTabs button[data-t="sampling"]`).append(`<span class="sw-count">${this.sampling_count}</span>`);
+			}
+			if (this.workspace_sampling && !this.sampling_selected_stage && this.workspace_sampling.stages.length) {
+				this.sampling_selected_stage = this.workspace_sampling.stages[0].name;
+			}
+			this.paint_sampling_tab($panels);
+		});
+	}
+
+	paint_sampling_tab($panels) {
+		const s = this.workspace_sampling;
+		if (!s) {
+			$panels.html(`
+				<div class="sw-card">
+					<div class="sw-card-b">
+						<div class="sw-empty">No Sample Plan yet for this style.</div>
+						<button class="sw-btn sw-btn-pri sw-btn-sm" id="swCreateSamplePlan" style="margin-top:10px">Set up sample plan</button>
+					</div>
+				</div>
+			`);
+			$panels.find("#swCreateSamplePlan").on("click", () => this.prompt_create_sample_plan($panels));
+			return;
+		}
+
+		const stageDot = { "Blocked": "pill-mut", "Not Started": "pill-mut", "In Progress": "pill-warn", "Closed - Approved": "pill-ok", "Closed - Dropped": "pill-bad" };
+		const versionDot = { "In Progress": "pill-warn", "Submitted": "pill-warn", "Approved": "pill-ok", "Revised": "pill-bad", "Cancelled": "pill-bad" };
+
+		const stageRows = (s.stages || []).map((stage) => {
+			const expanded = stage.name === this.sampling_selected_stage;
+			const deps = (() => { try { return JSON.parse(stage.depends_on || "[]"); } catch (e) { return []; } })();
+			const depBadge = !deps.length ? "parallel" : `after ${deps.join(", ")}`;
+			const versionRows = (stage.versions || []).length
+				? stage.versions.map((v) => `
+					<div class="sw-samp-version ${v.name === this.sampling_selected_version ? "sel" : ""}" data-version="${v.name}" data-stage="${stage.name}">
+						<span class="sw-dot ${versionDot[v.status] || "pill-mut"}"></span>
+						<span class="sw-samp-vno">v${v.version_no}</span>
+						<span class="sw-samp-desc">${frappe.utils.escape_html(v.description || "")}</span>
+						<span class="sw-samp-obscount">${(v.observations || []).length} obs</span>
+						<span class="sw-samp-vstatus">${v.status}</span>
+					</div>`).join("")
+				: `<div class="sw-empty" style="padding:6px 0">No versions yet.</div>`;
+			return `
+				<div class="sw-samp-stage">
+					<div class="sw-samp-stage-head" data-stage-toggle="${stage.name}">
+						<span class="sw-dot ${stageDot[stage.status] || "pill-mut"}"></span>
+						<span class="sw-samp-stage-name">${frappe.utils.escape_html(stage.stage_name)}</span>
+						${stage.is_added_for_style ? `<span class="sw-pill sw-pill-mut">added</span>` : ""}
+						<span class="sw-pill sw-pill-mut" title="Dependency">${frappe.utils.escape_html(depBadge)}</span>
+						<span class="sw-samp-owner">${frappe.utils.escape_html(stage.owner_user || "—")}</span>
+						<span class="sw-samp-status">${stage.status}</span>
+						<span class="sw-samp-closure">${stage.closure_date ? frappe.datetime.str_to_user(stage.closure_date) : ""}</span>
+					</div>
+					<div class="sw-samp-versions" style="display:${expanded ? "block" : "none"}">
+						${versionRows}
+						<div class="sw-samp-stage-actions">
+							<button class="sw-btn sw-btn-sm sw-samp-add-version" data-stage="${stage.name}">+ New version</button>
+							${!(stage.status || "").startsWith("Closed") ? `<button class="sw-btn sw-btn-sm sw-samp-drop-stage" data-stage="${stage.name}">Drop stage</button>` : ""}
+						</div>
+					</div>
+				</div>`;
+		}).join("");
+
+		const selectedStage = (s.stages || []).find(st => st.name === this.sampling_selected_stage);
+		const selectedVersion = selectedStage && (selectedStage.versions || []).find(v => v.name === this.sampling_selected_version);
+
+		let detailHtml = `<div class="sw-card"><div class="sw-card-b"><div class="sw-empty">Select or create a version to see its detail.</div></div></div>`;
+		if (selectedStage && selectedVersion) {
+			const v = selectedVersion;
+			const canEdit = ["In Progress", "Submitted"].includes(v.status);
+			const obsRows = (v.observations || []).length
+				? v.observations.map(o => `<div class="sw-samp-obs sw-samp-obs-${(o.status || "").toLowerCase().replace(/\s+/g, "-")} ${o.name === this.sampling_selected_observation ? "sel" : ""}" data-obs="${o.name}" data-photo="${o.photo || ""}">
+						<span class="sw-samp-obs-seq">${o.photo ? "📍" : "#"}${o.seq}</span>
+						<span class="sw-pill sw-pill-mut">${frappe.utils.escape_html(o.category || "—")}</span>
+						<span class="sw-samp-obs-text">${frappe.utils.escape_html(o.observation_text || "")}</span>
+						<span class="sw-samp-obs-status">${o.status}</span>
+						${canEdit ? `<button type="button" class="sw-btn sw-btn-sm sw-samp-obs-edit" data-obs="${o.name}" title="Edit">Edit</button>
+						<button type="button" class="sw-btn sw-btn-sm sw-samp-obs-delete" data-obs="${o.name}" title="Delete">Delete</button>` : ""}
+					</div>`).join("")
+				: `<div class="sw-empty">No observations on this version.</div>`;
+
+			const activePhotoName = this.sampling_active_photo;
+			const photoStrip = (v.photos || []).map(p => `
+				<div class="sw-samp-photo ${p.name === activePhotoName ? "sel" : ""}" data-photo="${p.name}" data-select-photo="${p.name}" title="Click to view &amp; annotate">
+					<img src="${frappe.utils.escape_html(p.image)}" alt="${frappe.utils.escape_html(p.caption || "")}">
+					${p.is_primary ? `<span class="sw-samp-photo-primary" title="Primary photo">★</span>` : ""}
+					${canEdit ? `<span class="sw-samp-photo-del" data-photo="${p.name}" title="Delete">&times;</span>` : ""}
+				</div>`).join("");
+			const captureTile = canEdit ? `
+				<label class="sw-samp-photo sw-samp-photo-add" title="Take a photo with your camera">
+					<input type="file" accept="image/*" capture="environment" id="swCapturePhoto" hidden>
+					<span>📷<br>Take photo</span>
+				</label>
+				<label class="sw-samp-photo sw-samp-photo-add" title="Upload a photo from files">
+					<input type="file" accept="image/*" id="swUploadPhoto" hidden>
+					<span>⬆<br>Upload</span>
+				</label>` : "";
+
+			const activePhoto = (v.photos || []).find(p => p.name === activePhotoName);
+			const pinsForPhoto = activePhoto ? (v.observations || []).filter(o => o.photo === activePhotoName) : [];
+			const annotatorHtml = activePhoto ? `
+				<div class="sw-samp-annotator">
+					<div class="sw-samp-annotator-bar">
+						<span class="sw-muted-sm">${frappe.utils.escape_html(activePhoto.caption || "Photo")} — click a pin to highlight its observation${canEdit ? ", or Add pin to place a new one" : ""}</span>
+						<div class="right">
+							${canEdit ? `<button class="sw-btn sw-btn-sm" id="swAddPinMode">+ Add pin</button>` : ""}
+							<button class="sw-btn sw-btn-sm" id="swCloseAnnotator">Close</button>
+						</div>
+					</div>
+					<div class="sw-samp-annotator-img sw-flat-wrap" id="swAnnotatorImg" data-photo="${activePhoto.name}">
+						<img src="${frappe.utils.escape_html(activePhoto.image)}" draggable="false">
+						${pinsForPhoto.map(o => `<button type="button" class="sw-pin ${o.name === this.sampling_selected_observation ? "on" : ""}" style="left:${o.pos_x}%;top:${o.pos_y}%" data-obs="${o.name}" title="${frappe.utils.escape_html(o.observation_text || "")}">${o.seq}</button>`).join("")}
+					</div>
+				</div>` : "";
+
+			const actions = [];
+			if (v.status === "In Progress") actions.push(`<button class="sw-btn sw-btn-sm" id="swMarkSubmitted">Mark submitted</button>`);
+			if (v.status === "Submitted") {
+				actions.push(`<button class="sw-btn sw-btn-pri sw-btn-sm" id="swApproveVersion">Approve</button>`);
+				actions.push(`<button class="sw-btn sw-btn-sm" id="swReviseVersion">Revise…</button>`);
+			}
+			if (["In Progress", "Submitted"].includes(v.status)) actions.push(`<button class="sw-btn sw-btn-sm" id="swCancelVersion">Cancel</button>`);
+			if (["In Progress", "Submitted"].includes(v.status)) actions.push(`<button class="sw-btn sw-btn-sm" id="swAddObservation">+ Add observation</button>`);
+
+			detailHtml = `
+				<div class="sw-card">
+					<div class="sw-card-h">
+						<h2>${frappe.utils.escape_html(selectedStage.stage_name)} — v${v.version_no}</h2>
+						<span class="sw-pill ${versionDot[v.status] || "pill-mut"}">${v.status}</span>
+					</div>
+					<div class="sw-card-b">
+						${v.dependency_override ? `<div class="sw-banner sw-banner-warn"><span>Created against an unsatisfied Advisory dependency: ${frappe.utils.escape_html(v.dependency_override_reason || "")}</span></div>` : ""}
+						<div class="sw-attr"><span>Owner</span><span>${frappe.utils.escape_html(selectedStage.owner_user || "—")}</span></div>
+						<div class="sw-attr"><span>Received</span><span>${v.received_on ? frappe.datetime.str_to_user(v.received_on) : "—"}</span></div>
+						<div class="sw-attr"><span>Decided</span><span>${v.decided_on ? frappe.datetime.str_to_user(v.decided_on) + " · " + frappe.utils.escape_html(v.decided_by || "") : "—"}</span></div>
+						<div class="sw-attr"><span>Sample cost</span><span>${v.sample_cost != null ? v.sample_cost : "—"}${v.is_recoverable ? " (recoverable)" : ""}</span></div>
+						<h3 style="margin:14px 0 6px;font-size:13px">Photos</h3>
+						<div class="sw-samp-photo-strip">${photoStrip}${captureTile}</div>
+						${annotatorHtml}
+						<h3 style="margin:14px 0 6px;font-size:13px">Observations</h3>
+						<div class="sw-samp-obs-list">${obsRows}</div>
+						<div class="sw-samp-actions" style="margin-top:12px">${actions.join("")}</div>
+					</div>
+				</div>`;
+		}
+
+		$panels.html(`
+			<div class="sw-samp-layout">
+				<div class="sw-samp-left">
+					<div class="sw-card-h" style="padding:0 0 8px"><h2>Stages</h2><div class="right"><button class="sw-btn sw-btn-sm" id="swAddSampleStage">+ Add stage</button></div></div>
+					${stageRows || `<div class="sw-empty">No stages.</div>`}
+				</div>
+				<div class="sw-samp-right">${detailHtml}</div>
+			</div>
+		`);
+		this.bind_sampling_tab($panels);
+	}
+
+	bind_sampling_tab($panels) {
+		$panels.off();
+		$panels.on("click", "[data-stage-toggle]", (e) => {
+			const stage = $(e.currentTarget).data("stage-toggle");
+			this.sampling_selected_stage = (this.sampling_selected_stage === stage) ? null : stage;
+			this.paint_sampling_tab($panels);
+		});
+		$panels.on("click", ".sw-samp-version", (e) => {
+			this.sampling_selected_stage = $(e.currentTarget).data("stage");
+			this.sampling_selected_version = $(e.currentTarget).data("version");
+			this.sampling_active_photo = null;
+			this.sampling_selected_observation = null;
+			this.sampling_pin_mode = false;
+			this.paint_sampling_tab($panels);
+		});
+		$panels.on("click", "#swAddSampleStage", () => this.prompt_add_sample_stage($panels));
+		$panels.on("click", ".sw-samp-add-version", (e) => {
+			const stage = $(e.currentTarget).data("stage");
+			frappe.dom.freeze("Creating…");
+			frappe.call({
+				method: "apparel_erp.product_development.sampling.create_version",
+				args: { stage, carry_observations: 1 },
+				callback: (r) => {
+					frappe.dom.unfreeze();
+					this.workspace_sampling = r.message;
+					this.sampling_selected_stage = stage;
+					this.sampling_selected_version = r.message.created_version;
+					sw_toast(this.wrapper, "New version created.");
+					this.paint_sampling_tab($panels);
+				},
+				error: () => frappe.dom.unfreeze()
+			});
+		});
+		$panels.on("click", ".sw-samp-drop-stage", (e) => {
+			const stage = $(e.currentTarget).data("stage");
+			frappe.confirm(__("Drop this stage? It won't be pursued for this style."), () => {
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.drop_stage",
+					args: { stage },
+					callback: (r) => { this.workspace_sampling = r.message; this.paint_sampling_tab($panels); }
+				});
+			});
+		});
+		$panels.on("click", "#swMarkSubmitted", () => this.sampling_version_action("mark_version_submitted", {}, "Marked submitted."));
+		$panels.on("click", "#swCancelVersion", () => {
+			frappe.confirm(__("Cancel this version?"), () => this.sampling_version_action("cancel_version", {}, "Version cancelled."));
+		});
+		$panels.on("click", "#swApproveVersion", () => this.prompt_decide_version($panels, "Approved"));
+		$panels.on("click", "#swReviseVersion", () => this.prompt_decide_version($panels, "Revised"));
+		$panels.on("click", "#swAddObservation", () => this.prompt_add_observation($panels));
+		$panels.on("change", "#swCapturePhoto", (e) => this.upload_sample_photo(e, $panels, "Mobile"));
+		$panels.on("change", "#swUploadPhoto", (e) => this.upload_sample_photo(e, $panels, "Desktop"));
+		$panels.on("click", ".sw-samp-photo-del", (e) => {
+			e.stopPropagation();
+			const photo = $(e.currentTarget).data("photo");
+			frappe.confirm(__("Delete this photo?"), () => {
+				frappe.dom.freeze("Deleting…");
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.delete_photo",
+					args: { photo },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						this.workspace_sampling = r.message;
+						if (this.sampling_active_photo === photo) this.sampling_active_photo = null;
+						this.paint_sampling_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			});
+		});
+		$panels.on("click", "[data-select-photo]", (e) => {
+			if ($(e.target).hasClass("sw-samp-photo-del")) return;
+			const name = $(e.currentTarget).data("select-photo");
+			this.sampling_active_photo = (this.sampling_active_photo === name) ? null : name;
+			this.sampling_selected_observation = null;
+			this.sampling_pin_mode = false;
+			this.paint_sampling_tab($panels);
+		});
+		$panels.on("click", "#swCloseAnnotator", () => {
+			this.sampling_active_photo = null;
+			this.sampling_selected_observation = null;
+			this.sampling_pin_mode = false;
+			this.paint_sampling_tab($panels);
+		});
+		$panels.on("click", "#swAddPinMode", (e) => {
+			this.sampling_pin_mode = !this.sampling_pin_mode;
+			$(e.currentTarget).text(this.sampling_pin_mode ? "Click the photo…" : "+ Add pin");
+			$panels.find("#swAnnotatorImg").toggleClass("adding", this.sampling_pin_mode);
+		});
+		// Click on the enlarged photo (while in pin-add mode) places a new
+		// pin at that percentage position and opens the observation entry -
+		// the same click-to-place pattern the Tech Pack sketch callouts use
+		// (spec 7.2: reuse the pinned-image behaviour, don't fork it).
+		$panels.on("click", "#swAnnotatorImg", (e) => {
+			if (!this.sampling_pin_mode || $(e.target).hasClass("sw-pin")) return;
+			const $wrap = $(e.currentTarget);
+			const rect = $wrap[0].getBoundingClientRect();
+			const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+			const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+			const photo = $wrap.data("photo");
+			const d = new frappe.ui.Dialog({
+				title: "Add pinned observation",
+				fields: [
+					{ fieldname: "category", label: "Category", fieldtype: "Link", options: "Observation Category" },
+					{ fieldname: "observation_text", label: "Observation", fieldtype: "Small Text", reqd: 1 }
+				],
+				primary_action_label: "Add",
+				primary_action: (values) => {
+					frappe.dom.freeze("Adding…");
+					frappe.call({
+						method: "apparel_erp.product_development.sampling.add_observation",
+						args: {
+							version: this.sampling_selected_version, observation_text: values.observation_text,
+							category: values.category, photo, pos_x: x.toFixed(2), pos_y: y.toFixed(2)
+						},
+						callback: (r) => {
+							frappe.dom.unfreeze();
+							d.hide();
+							this.workspace_sampling = r.message;
+							this.sampling_pin_mode = false;
+							this.paint_sampling_tab($panels);
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			});
+			d.show();
+		});
+		// Click a pin <-> highlight its observation row, and vice versa -
+		// clicking an observation with a photo jumps the annotator to it.
+		$panels.on("click", ".sw-pin", (e) => {
+			e.stopPropagation();
+			const obs = $(e.currentTarget).data("obs");
+			this.sampling_selected_observation = (this.sampling_selected_observation === obs) ? null : obs;
+			this.paint_sampling_tab($panels);
+		});
+		$panels.on("click", ".sw-samp-obs", (e) => {
+			if ($(e.target).is(".sw-samp-obs-edit, .sw-samp-obs-delete")) return;
+			const photo = $(e.currentTarget).data("photo");
+			const obs = $(e.currentTarget).data("obs");
+			if (!photo) return;
+			this.sampling_active_photo = photo;
+			this.sampling_selected_observation = (this.sampling_selected_observation === obs) ? null : obs;
+			this.paint_sampling_tab($panels);
+		});
+		$panels.on("click", ".sw-samp-obs-edit", (e) => {
+			e.stopPropagation();
+			const obsName = $(e.currentTarget).data("obs");
+			const stage = (this.workspace_sampling.stages || []).find(st => st.name === this.sampling_selected_stage);
+			const version = stage && (stage.versions || []).find(ver => ver.name === this.sampling_selected_version);
+			const obs = version && (version.observations || []).find(o => o.name === obsName);
+			if (!obs) return;
+			const d = new frappe.ui.Dialog({
+				title: "Edit observation",
+				fields: [
+					{ fieldname: "category", label: "Category", fieldtype: "Link", options: "Observation Category", default: obs.category },
+					{ fieldname: "observation_text", label: "Observation", fieldtype: "Small Text", reqd: 1, default: obs.observation_text },
+					{ fieldname: "status", label: "Status", fieldtype: "Select", options: "Open\nResolved\nCarried Forward", default: obs.status }
+				],
+				primary_action_label: "Save",
+				primary_action: (values) => {
+					frappe.dom.freeze("Saving…");
+					frappe.call({
+						method: "apparel_erp.product_development.sampling.update_observation",
+						args: { observation: obsName, observation_text: values.observation_text, category: values.category, status: values.status },
+						callback: (r) => {
+							frappe.dom.unfreeze();
+							d.hide();
+							this.workspace_sampling = r.message;
+							this.paint_sampling_tab($panels);
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			});
+			d.show();
+		});
+		$panels.on("click", ".sw-samp-obs-delete", (e) => {
+			e.stopPropagation();
+			const obsName = $(e.currentTarget).data("obs");
+			frappe.confirm(__("Delete this observation?"), () => {
+				frappe.dom.freeze("Deleting…");
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.delete_observation",
+					args: { observation: obsName },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						this.workspace_sampling = r.message;
+						if (this.sampling_selected_observation === obsName) this.sampling_selected_observation = null;
+						this.paint_sampling_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			});
+		});
+	}
+
+	upload_sample_photo(e, $panels, captureSource) {
+		const file = e.target.files && e.target.files[0];
+		e.target.value = "";
+		if (!file) return;
+		const formData = new FormData();
+		formData.append("file", file);
+		formData.append("is_private", 1);
+		frappe.dom.freeze("Uploading photo…");
+		fetch("/api/method/upload_file", {
+			method: "POST",
+			headers: { "X-Frappe-CSRF-Token": frappe.csrf_token },
+			body: formData
+		})
+			.then(r => r.json())
+			.then(data => {
+				const file_url = data.message && data.message.file_url;
+				if (!file_url) throw new Error("Upload did not return a file URL");
+				return new Promise((resolve, reject) => {
+					frappe.call({
+						method: "apparel_erp.product_development.sampling.add_photo",
+						args: { version: this.sampling_selected_version, file_url, capture_source: captureSource },
+						callback: (r) => resolve(r),
+						error: (r) => reject(r)
+					});
+				});
+			})
+			.then((r) => {
+				frappe.dom.unfreeze();
+				this.workspace_sampling = r.message;
+				sw_toast(this.wrapper, "Photo added.");
+				this.paint_sampling_tab($panels);
+			})
+			.catch((err) => {
+				frappe.dom.unfreeze();
+				console.error("Photo upload failed", err);
+				frappe.msgprint({ title: __("Upload failed"), indicator: "red", message: __("Could not upload the photo. Please try again.") });
+			});
+	}
+
+	sampling_version_action(method, extraArgs, toastMsg) {
+		const $panels = $(this.wrapper).find("#swPanels");
+		frappe.dom.freeze("Saving…");
+		frappe.call({
+			method: `apparel_erp.product_development.sampling.${method}`,
+			args: Object.assign({ version: this.sampling_selected_version }, extraArgs),
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				this.workspace_sampling = r.message;
+				sw_toast(this.wrapper, toastMsg);
+				this.paint_sampling_tab($panels);
+			},
+			error: () => frappe.dom.unfreeze()
+		});
+	}
+
+	prompt_create_sample_plan($panels) {
+		const d = new frappe.ui.Dialog({
+			title: "Set up sample plan",
+			fields: [
+				{ fieldname: "customer", label: "Customer", fieldtype: "Data" },
+				{ fieldname: "season", label: "Season", fieldtype: "Data" },
+				{ fieldname: "template", label: "Sampling Template", fieldtype: "Link", options: "Sampling Template",
+					description: "Leave blank to auto-resolve by customer/category, then category, then the default template." }
+			],
+			primary_action_label: "Create",
+			primary_action: (values) => {
+				frappe.dom.freeze("Creating…");
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.create_plan",
+					args: { style: this.style.name, customer: values.customer, season: values.season, template: values.template },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_sampling = r.message;
+						this.sampling_selected_stage = (r.message.stages[0] || {}).name;
+						sw_toast(this.wrapper, "Sample plan created.");
+						this.paint_sampling_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	prompt_add_sample_stage($panels) {
+		const stageOptions = (this.workspace_sampling.stages || []).map(s => s.stage_name);
+		const d = new frappe.ui.Dialog({
+			title: "Add stage",
+			fields: [
+				{ fieldname: "stage_name", label: "Stage Name", fieldtype: "Data", reqd: 1 },
+				{ fieldname: "after", label: "Depends On (optional)", fieldtype: "Select", options: [""].concat(stageOptions).join("\n") },
+				{ fieldname: "dependency_type", label: "Dependency Type", fieldtype: "Select", options: "Blocking\nAdvisory", default: "Blocking" }
+			],
+			primary_action_label: "Add",
+			primary_action: (values) => {
+				frappe.dom.freeze("Adding…");
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.add_stage",
+					args: { plan: this.workspace_sampling.plan.name, stage_name: values.stage_name, after: values.after || null, dependency_type: values.dependency_type },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_sampling = r.message;
+						sw_toast(this.wrapper, `${values.stage_name} added.`);
+						this.paint_sampling_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	prompt_decide_version($panels, decision) {
+		const fields = [];
+		if (decision === "Revised") {
+			fields.push({ fieldname: "reason_category", label: "Reason Category", fieldtype: "Link", options: "Observation Category", reqd: 1 });
+		}
+		const d = new frappe.ui.Dialog({
+			title: decision === "Approved" ? "Approve version" : "Mark revised",
+			fields,
+			primary_action_label: decision,
+			primary_action: (values) => {
+				frappe.dom.freeze("Saving…");
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.decide_version",
+					args: { version: this.sampling_selected_version, decision, reason_category: values.reason_category },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_sampling = r.message;
+						if (r.message.successor_version) {
+							this.sampling_selected_version = r.message.successor_version;
+							sw_toast(this.wrapper, `Revised - new version ${r.message.successor_version} created.`);
+						} else {
+							sw_toast(this.wrapper, "Version approved.");
+						}
+						this.paint_sampling_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	prompt_add_observation($panels) {
+		const d = new frappe.ui.Dialog({
+			title: "Add observation",
+			fields: [
+				{ fieldname: "category", label: "Category", fieldtype: "Link", options: "Observation Category" },
+				{ fieldname: "observation_text", label: "Observation", fieldtype: "Small Text", reqd: 1 }
+			],
+			primary_action_label: "Add",
+			primary_action: (values) => {
+				frappe.dom.freeze("Adding…");
+				frappe.call({
+					method: "apparel_erp.product_development.sampling.add_observation",
+					args: { version: this.sampling_selected_version, observation_text: values.observation_text, category: values.category },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_sampling = r.message;
+						this.paint_sampling_tab($panels);
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	// ---------- Time & Action ----------
+	render_tna_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading time &amp; action…</div>`);
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_tna.style_tna.get_workspace_tna",
+			args: { style: this.style.name }
+		}).then((r) => {
+			this.workspace_tna = r.message || null;
+			this.tna_count = this.workspace_tna ? (this.workspace_tna.activities || []).length : 0;
+			$(this.wrapper).find(`#swTabs button[data-t="tna"] .sw-count`).remove();
+			if (this.tna_count) {
+				$(this.wrapper).find(`#swTabs button[data-t="tna"]`).append(`<span class="sw-count">${this.tna_count}</span>`);
+			}
+			this.paint_tna_tab($panels);
+		});
+	}
+
+	paint_tna_tab($panels) {
+		const t = this.workspace_tna;
+		if (!t) {
+			$panels.html(`
+				<div class="sw-card">
+					<div class="sw-card-b">
+						<div class="sw-empty">No Time &amp; Action schedule yet for this style.</div>
+						<button class="sw-btn sw-btn-pri sw-btn-sm" id="swCreateTna" style="margin-top:10px">Set up T&amp;A schedule</button>
+					</div>
+				</div>
+			`);
+			$panels.find("#swCreateTna").on("click", () => this.prompt_create_tna($panels));
+			return;
+		}
+
+		const statusMap = {
+			Done: ["pill-ok", "Done"],
+			Late: ["pill-bad", "Late"],
+			"At Risk": ["pill-warn", "At risk"],
+			"In Progress": ["pill-info", "In progress"],
+			Open: ["pill-mut", "Open"]
+		};
+
+		const fmtDate = (d) => d ? frappe.datetime.str_to_user(d) : `<span class="sw-empty">—</span>`;
+
+		const rows = t.activities || [];
+		let lastGroup = null;
+		let rowsHtml = "";
+		rows.forEach((r) => {
+			if (r.activity_group && r.activity_group !== lastGroup) {
+				rowsHtml += `<tr class="sw-grp"><td colspan="8">${frappe.utils.escape_html(r.activity_group)}</td></tr>`;
+				lastGroup = r.activity_group;
+			}
+			const [cls, lbl] = statusMap[r.status] || statusMap.Open;
+			const vc = r.variance_days > 0 ? "var(--sw-bad)" : r.variance_days < 0 ? "var(--sw-ok)" : "var(--sw-ink-3)";
+			rowsHtml += `
+				<tr${r.status === "Late" ? ' style="background:var(--sw-bad-bg)"' : ""}>
+					<td>${r.is_milestone ? '<span style="color:var(--sw-warn)">\u25c6</span> ' : ""}${frappe.utils.escape_html(r.activity || "")}</td>
+					<td style="color:var(--sw-ink-2)">${frappe.utils.escape_html(r.responsible || "")}</td>
+					<td>${fmtDate(r.plan_date)}</td>
+					<td>${fmtDate(r.revised_date)}</td>
+					<td>${fmtDate(r.actual_date)}</td>
+					<td class="num" style="color:${vc}">${r.variance_days > 0 ? "+" : ""}${r.variance_days || 0}</td>
+					<td><span class="pill ${cls}">${lbl}</span></td>
+					<td><button class="sw-btn sw-btn-sm" data-name="${frappe.utils.escape_html(r.name)}" data-activity="${frappe.utils.escape_html(r.activity || "")}">View</button></td>
+				</tr>`;
+		});
+
+		$panels.html(`
+			<div class="sw-card">
+				<div class="sw-card-b">
+					<div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap">
+						<div>
+							<div style="font-size:15px;font-weight:600">${frappe.utils.escape_html(t.po_reference || "No PO reference")}${t.po_qty ? ` · ${Number(t.po_qty).toLocaleString()} pcs` : ""}${t.incoterm ? ` · ${frappe.utils.escape_html(t.incoterm)}` : ""}</div>
+							<div style="color:var(--sw-ink-2);font-size:13px;margin-top:2px">${frappe.utils.escape_html(t.template || "")}</div>
+						</div>
+						<div style="text-align:right">
+							<div style="font-size:12px;color:var(--sw-ink-2)">Ex-factory</div>
+							<div style="font-size:16px;font-weight:600">${fmtDate(t.ex_factory_date)}</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="sw-grid3" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+				<div class="sw-kpi"><div class="lbl">Completed</div><div class="val">${t.kpis.completed}</div></div>
+				<div class="sw-kpi"><div class="lbl">On track</div><div class="val">${t.kpis.on_track}</div></div>
+				<div class="sw-kpi sw-kpi-warn"><div class="lbl">At risk</div><div class="val">${t.kpis.at_risk}</div></div>
+				<div class="sw-kpi sw-kpi-bad"><div class="lbl">Delayed</div><div class="val">${t.kpis.delayed}</div></div>
+			</div>
+
+			${t.banner ? `<div class="sw-banner sw-banner-bad"><span>${frappe.utils.escape_html(t.banner)}</span></div>` : ""}
+
+			<div class="sw-card">
+				<div class="sw-card-h">
+					<h2>Activities</h2>
+					<div class="right">
+						<div class="sw-view-toggle">
+							<button class="sw-btn sw-btn-sm ${this.tna_view !== "gantt" ? "on" : ""}" data-tna-view="list">List</button>
+							<button class="sw-btn sw-btn-sm ${this.tna_view === "gantt" ? "on" : ""}" data-tna-view="gantt">Gantt</button>
+						</div>
+						<button class="sw-btn sw-btn-sm" id="swSyncTnaActivities" title="Tick off Design &amp; Tech Pack / Costing / Sampling milestones from their real status elsewhere in the workspace">Fetch activities</button>
+						<button class="sw-btn sw-btn-sm" id="swAddTnaActivity">+ Add activity</button>
+						<button class="sw-btn sw-btn-sm" id="swRescheduleTna">Reschedule</button>
+					</div>
+				</div>
+				${this.tna_view === "gantt" ? this.render_tna_gantt(rows) : `
+				<table>
+					<thead><tr><th style="width:28%">Activity</th><th style="width:12%">Owner</th><th style="width:11%">Plan</th><th style="width:11%">Revised</th><th style="width:11%">Actual</th><th class="num" style="width:8%">Var</th><th style="width:12%">Status</th><th style="width:6%"></th></tr></thead>
+					<tbody>${rowsHtml || `<tr><td colspan="8" class="sw-empty">No activities yet.</td></tr>`}</tbody>
+				</table>`}
+			</div>
+		`);
+		this.bind_tna_tab($panels);
+	}
+
+	render_tna_gantt(rows) {
+		// A Frappe-Project-style Gantt over the same activities: bars from
+		// Plan to whichever of Actual/Revised is latest, milestones as
+		// diamonds at their date, grouped and coloured the same way the
+		// List view already does. Self-contained SVG-free HTML/CSS, no
+		// dependency on Frappe's internal Gantt bundle so it doesn't need
+		// a separate frappe.require() load.
+		const dated = rows.filter(r => r.plan_date || r.revised_date || r.actual_date);
+		if (!dated.length) {
+			return `<div class="sw-card-b"><div class="sw-empty">No dated activities to plot yet.</div></div>`;
+		}
+		const allDates = [];
+		dated.forEach(r => [r.plan_date, r.revised_date, r.actual_date].forEach(d => { if (d) allDates.push(new Date(d)); }));
+		const today = new Date();
+		allDates.push(today);
+		let minD = new Date(Math.min(...allDates));
+		let maxD = new Date(Math.max(...allDates));
+		minD.setDate(minD.getDate() - 2);
+		maxD.setDate(maxD.getDate() + 2);
+		const totalMs = maxD - minD || 1;
+		const pct = (d) => Math.max(0, Math.min(100, ((new Date(d) - minD) / totalMs) * 100));
+		const todayPct = pct(today);
+
+		const statusColor = { Done: "var(--sw-ok)", Late: "var(--sw-bad)", "At Risk": "var(--sw-warn)", "In Progress": "var(--sw-info,#3B82F6)", Open: "var(--sw-ink-3)" };
+
+		const tickCount = 6;
+		let ticksHtml = "";
+		for (let i = 0; i <= tickCount; i++) {
+			const d = new Date(minD.getTime() + (totalMs * i) / tickCount);
+			ticksHtml += `<div class="sw-gantt-tick" style="left:${(i / tickCount) * 100}%">${frappe.datetime.str_to_user(d.toISOString().slice(0, 10))}</div>`;
+		}
+
+		let lastGroup = null;
+		let rowsHtml = "";
+		dated.forEach((r) => {
+			if (r.activity_group && r.activity_group !== lastGroup) {
+				rowsHtml += `<div class="sw-gantt-group">${frappe.utils.escape_html(r.activity_group)}</div>`;
+				lastGroup = r.activity_group;
+			}
+			const color = statusColor[r.status] || statusColor.Open;
+			const label = `${r.is_milestone ? "\u25c6 " : ""}${frappe.utils.escape_html(r.activity || "")}`;
+			if (r.is_milestone) {
+				const at = r.actual_date || r.revised_date || r.plan_date;
+				rowsHtml += `<div class="sw-gantt-row">
+					<div class="sw-gantt-label" title="${label}">${label}</div>
+					<div class="sw-gantt-track">
+						<div class="sw-gantt-diamond" style="left:${pct(at)}%;background:${color}" title="${frappe.utils.escape_html(r.activity)} — ${r.status}"></div>
+					</div>
+				</div>`;
+			} else {
+				const start = r.plan_date || r.revised_date || r.actual_date;
+				const end = r.actual_date || r.revised_date || r.plan_date;
+				const left = pct(start);
+				const width = Math.max(pct(end) - left, 1.2);
+				rowsHtml += `<div class="sw-gantt-row">
+					<div class="sw-gantt-label" title="${label}">${label}</div>
+					<div class="sw-gantt-track">
+						<div class="sw-gantt-bar" style="left:${left}%;width:${width}%;background:${color}" title="${frappe.utils.escape_html(r.activity)} — ${r.status}"></div>
+					</div>
+				</div>`;
+			}
+		});
+
+		return `
+			<div class="sw-card-b">
+				<div class="sw-gantt">
+					<div class="sw-gantt-axis">
+						${ticksHtml}
+						<div class="sw-gantt-today" style="left:${todayPct}%" title="Today"></div>
+					</div>
+					${rowsHtml}
+				</div>
+				<div class="sw-gantt-legend">
+					<span><i style="background:${statusColor.Done}"></i>Done</span>
+					<span><i style="background:${statusColor["In Progress"]}"></i>In progress</span>
+					<span><i style="background:${statusColor["At Risk"]}"></i>At risk</span>
+					<span><i style="background:${statusColor.Late}"></i>Late</span>
+					<span><i style="background:${statusColor.Open}"></i>Open</span>
+					<span>\u25c6 Milestone</span>
+				</div>
+			</div>`;
+	}
+
+	bind_tna_tab($panels) {
+		$panels.off();
+		$panels.find("[data-tna-view]").on("click", (e) => {
+			this.tna_view = $(e.currentTarget).data("tna-view");
+			this.paint_tna_tab($panels);
+		});
+		$panels.find("#swSyncTnaActivities").on("click", () => {
+			frappe.dom.freeze("Fetching…");
+			frappe.call({
+				method: "apparel_erp.product_development.doctype.style_tna.style_tna.sync_tna_activities_from_style",
+				args: { style: this.style.name },
+				callback: (r) => {
+					frappe.dom.unfreeze();
+					this.workspace_tna = r.message;
+					this.tna_count = (this.workspace_tna.activities || []).length;
+					const marked = (r.message && r.message.newly_marked) || [];
+					const inProgress = (r.message && r.message.newly_in_progress) || [];
+					const parts = [];
+					if (marked.length) parts.push(`Done: ${marked.join(", ")}`);
+					if (inProgress.length) parts.push(`In progress: ${inProgress.join(", ")}`);
+					sw_toast(this.wrapper, parts.length ? parts.join(" · ") : "No changes to fetch - already up to date.");
+					this.paint_tna_tab($panels);
+				},
+				error: () => frappe.dom.unfreeze()
+			});
+		});
+		$panels.find("#swAddTnaActivity").on("click", () => this.prompt_add_tna_activity($panels));
+		$panels.find("#swRescheduleTna").on("click", () => {
+			frappe.confirm(
+				"Reschedule downstream activities based on the worst current delay?",
+				() => {
+					frappe.dom.freeze("Recalculating…");
+					frappe.call({
+						method: "apparel_erp.product_development.doctype.style_tna.style_tna.reschedule_workspace_tna",
+						args: { style: this.style.name },
+						callback: (r) => {
+							frappe.dom.unfreeze();
+							this.workspace_tna = r.message;
+							this.paint_tna_tab($panels);
+							const msg = r.message || {};
+							sw_toast(this.wrapper, msg.shifted
+								? `Shifted ${msg.shifted} activity(s) by ${msg.delay_days} day(s).`
+								: "No active delay found — nothing to reschedule.");
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			);
+		});
+		$panels.find("[data-name]").on("click", (e) => {
+			const name = $(e.currentTarget).data("name");
+			const activity = $(e.currentTarget).data("activity");
+			const row = (this.workspace_tna.activities || []).find(r => r.name === name);
+			if (!row) return;
+			const d = new frappe.ui.Dialog({
+				title: activity,
+				fields: [
+					{ fieldname: "info", fieldtype: "HTML" }
+				],
+				primary_action_label: row.actual_date ? "Close" : "Mark done today",
+				primary_action: () => {
+					if (row.actual_date) { d.hide(); return; }
+					frappe.dom.freeze("Saving…");
+					frappe.call({
+						method: "apparel_erp.product_development.doctype.style_tna.style_tna.mark_tna_activity_actual",
+						args: { style: this.style.name, activity_name: name },
+						callback: (r) => {
+							frappe.dom.unfreeze();
+							d.hide();
+							this.workspace_tna = r.message;
+							this.paint_tna_tab($panels);
+							sw_toast(this.wrapper, `${activity} marked done.`);
+						},
+						error: () => frappe.dom.unfreeze()
+					});
+				}
+			});
+			const fmtDate = (v) => v ? frappe.datetime.str_to_user(v) : "—";
+			d.fields_dict.info.$wrapper.html(`
+				<div class="attr"><span>Planned</span><span>${fmtDate(row.plan_date)}</span></div>
+				<div class="attr"><span>Revised</span><span>${fmtDate(row.revised_date)}</span></div>
+				<div class="attr"><span>Actual</span><span>${fmtDate(row.actual_date)}</span></div>
+				<div class="attr"><span>Variance</span><span>${row.variance_days > 0 ? "+" : ""}${row.variance_days || 0} day(s)</span></div>
+				${row.source_reference ? `<div class="attr"><span>Source</span><span class="mono">${frappe.utils.escape_html(row.source_reference)}</span></div>` : ""}
+			`);
+			d.show();
+		});
+	}
+
+	prompt_create_tna($panels) {
+		const d = new frappe.ui.Dialog({
+			title: "Set up Time & Action schedule",
+			fields: [
+				{ fieldname: "po_reference", label: "Buyer PO", fieldtype: "Data" },
+				{ fieldname: "po_qty", label: "PO Quantity", fieldtype: "Int" },
+				{ fieldname: "incoterm", label: "Incoterm", fieldtype: "Data", default: "FOB" },
+				{ fieldname: "template", label: "T&A Template", fieldtype: "Data" },
+				{ fieldname: "ex_factory_date", label: "Ex-factory Date", fieldtype: "Date" }
+			],
+			primary_action_label: "Create",
+			primary_action: (values) => {
+				frappe.dom.freeze("Creating…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style_tna.style_tna.create_workspace_tna",
+					args: { style: this.style.name, payload: JSON.stringify(values) },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_tna = r.message;
+						this.paint_tna_tab($panels);
+						sw_toast(this.wrapper, "Time & Action schedule created.");
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		// Prefill from an existing Apparel Order so the PO doesn't have to be
+		// typed twice - it just shows up here if it exists.
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.apparel_order.apparel_order.get_workspace_order",
+			args: { style: this.style.name }
+		}).then((r) => {
+			const o = r.message;
+			if (!o) return;
+			if (o.buyer_po) d.set_value("po_reference", o.buyer_po);
+			if (o.total_quantity) d.set_value("po_qty", o.total_quantity);
+			if (o.incoterm) d.set_value("incoterm", o.incoterm);
+			if (o.delivery_date) d.set_value("ex_factory_date", o.delivery_date);
+		});
+		d.show();
+	}
+
+	prompt_add_tna_activity($panels) {
+		const d = new frappe.ui.Dialog({
+			title: "Add activity",
+			fields: [
+				{ fieldname: "activity_group", label: "Group", fieldtype: "Data", description: "e.g. Fabric, Pre-production, Production and shipping" },
+				{ fieldname: "activity", label: "Activity", fieldtype: "Data", reqd: 1 },
+				{ fieldname: "responsible", label: "Owner", fieldtype: "Data" },
+				{ fieldname: "plan_date", label: "Plan date", fieldtype: "Date", reqd: 1 },
+				{ fieldname: "is_milestone", label: "Milestone", fieldtype: "Check" }
+			],
+			primary_action_label: "Add",
+			primary_action: (values) => {
+				const activities = (this.workspace_tna.activities || []).map(r => ({ ...r }));
+				activities.push({
+					activity_group: values.activity_group,
+					activity: values.activity,
+					responsible: values.responsible,
+					plan_date: values.plan_date,
+					revised_date: values.plan_date,
+					is_milestone: values.is_milestone
+				});
+				frappe.dom.freeze("Saving…");
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.style_tna.style_tna.save_workspace_tna",
+					args: { style: this.style.name, payload: JSON.stringify({ activities }) },
+					callback: (r) => {
+						frappe.dom.unfreeze();
+						d.hide();
+						this.workspace_tna = r.message;
+						this.tna_count = (this.workspace_tna.activities || []).length;
+						this.paint_tna_tab($panels);
+						sw_toast(this.wrapper, "Activity added.");
+					},
+					error: () => frappe.dom.unfreeze()
+				});
+			}
+		});
+		d.show();
+	}
+
+	render_techpack_tab($panels) {
+		$panels.html(`<div class="sw-loading">Loading tech pack…</div>`);
+		frappe.call({
+			method: "frappe.client.get_list",
+			args: { doctype: "Design Tech Pack", filters: { style: this.style.name }, fields: ["name"], limit: 1 }
+		}).then(r => {
+			if (!r.message || !r.message.length) {
+				$panels.html(`
+					<div class="sw-card"><div class="sw-card-b">
+						<div class="sw-empty">No Design Tech Pack linked to this style yet.</div>
+						<button class="sw-btn sw-btn-pri" style="margin-top:10px" id="swCreateTP">Create Design Tech Pack</button>
+					</div></div>
+				`);
+				$panels.find("#swCreateTP").on("click", () => this.open_tech_pack());
+				return;
+			}
+			Promise.all([
+				frappe.call({ method: "frappe.client.get", args: { doctype: "Design Tech Pack", name: r.message[0].name } }),
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.design_tech_pack.design_tech_pack.get_style_snapshot",
+					args: { style: this.style.name }
+				})
+			]).then(([techPack, snapshot]) => this.tpl_techpack($panels, techPack.message, snapshot.message));
+		});
+	}
+
+	tpl_techpack($panels, tp, styleSnapshot) {
+		const sizes = [...new Set((tp.measurements || []).map(m => m.size))];
+		const points = [...new Set((tp.measurements || []).map(m => m.measurement_point))];
+		let pom = `<div class="sw-empty">No measurement points yet.</div>`;
+		if (points.length) {
+			pom = `<table><thead><tr><th>POM</th>${sizes.map(sz => `<th class="sw-num">${frappe.utils.escape_html(sz)}</th>`).join("")}</tr></thead><tbody>`;
+			points.forEach(p => {
+				pom += `<tr><td>${frappe.utils.escape_html(p)}</td>`;
+				sizes.forEach(sz => {
+					const m = (tp.measurements || []).find(x => x.measurement_point === p && x.size === sz);
+					pom += `<td class="sw-num">${m ? m.value : ""}</td>`;
+				});
+				pom += `</tr>`;
+			});
+			pom += `</tbody></table>`;
+		}
+
+		// Fabric / trims specification is drawn from the real Style BOM rows —
+		// there's no separate table for it on Design Tech Pack.
+		const bomRows = (styleSnapshot && styleSnapshot.bom_items) || this.style.bom_items || [];
+		const fabricRows = bomRows.filter(r => r.item_type === "Fabric");
+		const trimRows = bomRows.filter(r => r.item_type === "Trim" || r.item_type === "Packaging" || r.item_type === "Packing");
+
+		const bomEditable = !!(styleSnapshot && styleSnapshot.bom_editable);
+		const fmtRate = (n) => (n != null && n !== "" ? Number(n).toFixed(2) : "");
+		const rateCell = (r) => bomEditable
+			? `<input class="sw-cell" data-rate-line="${frappe.utils.escape_html(r.line_id || "")}" type="number" step="0.01" min="0" value="${r.rate || 0}">`
+			: fmtRate(r.rate);
+		const fabricTbl = fabricRows.length
+			? `<table><thead><tr><th>Item</th><th>Composition</th><th class="sw-num">GSM</th><th class="sw-num">Rate</th></tr></thead><tbody>
+				${fabricRows.map(r => `<tr><td>${frappe.utils.escape_html(r.item_name || "")}</td><td>${frappe.utils.escape_html(r.composition || "")}</td><td class="sw-num">${frappe.utils.escape_html(r.gsm || "")}</td><td class="sw-num">${rateCell(r)}</td></tr>`).join("")}
+			</tbody></table>`
+			: `<div class="sw-empty">No Fabric rows on the Style BOM.</div>`;
+
+		const trimTbl = trimRows.length
+			? `<table><thead><tr><th>Trim</th><th>UOM</th><th class="sw-num">Base qty</th><th class="sw-num">Rate</th></tr></thead><tbody>
+				${trimRows.map(r => `<tr><td>${frappe.utils.escape_html(r.item_name || "")}</td><td>${frappe.utils.escape_html(r.uom || "")}</td><td class="sw-num">${r.base_qty != null ? r.base_qty : ""}</td><td class="sw-num">${rateCell(r)}</td></tr>`).join("")}
+			</tbody></table>`
+			: `<div class="sw-empty">No Trim/Packaging rows on the Style BOM.</div>`;
+
+		const refImages = tp.reference_images || [];
+		const attachments = tp.attachments || [];
+		const callouts = tp.callouts || [];
+		const frontCallouts = callouts.filter(c => (c.sketch || "Front") === "Front");
+		const backCallouts = callouts.filter(c => c.sketch === "Back");
+
+		$panels.html(`
+			<div class="sw-card">
+				<div class="sw-card-h">
+					<h2>Tech pack</h2>
+					<div class="sw-right">
+						${this.generate_bom_button_html("Design & Tech Pack")}
+						${this.generate_bom_hint_html("Design & Tech Pack")}
+						<button class="sw-pill sw-pill-mut sw-version-button" id="swTechPackVersion" title="View Tech Pack version history">${frappe.utils.escape_html(tp.tech_pack_version || "v1")}</button>
+						<button class="sw-btn sw-btn-sm" id="swDownloadPdf">Download PDF</button>
+						<button class="sw-btn sw-btn-sm" id="swOpenTPForm">Open full tech pack</button>
+					</div>
+				</div>
+				<div class="sw-card-b">
+					<div class="sw-banner sw-banner-ok">
+						<span>Status:</span>
+						<select id="swTechPackStatus" class="sw-inline-select">
+							<option value="Not Started" ${(tp.status || "Not Started") === "Not Started" ? "selected" : ""}>Not Started</option>
+							<option value="In Progress" ${tp.status === "In Progress" ? "selected" : ""}>In Progress</option>
+							<option value="Completed" ${tp.status === "Completed" ? "selected" : ""}>Completed</option>
+						</select>
+						<span>${tp.last_updated_on ? " · last updated " + frappe.datetime.str_to_user(tp.last_updated_on) : ""}</span>
+					</div>
+				</div>
+			</div>
+			<div class="sw-grid2" style="grid-template-columns:1.1fr 1fr">
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Front sketch &amp; callouts</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swAddCalloutFront">+ Add callout</button></div></div>
+					<div class="sw-card-b">
+						${tp.front_sketch
+								? `<div class="sw-flat-wrap" id="swFrontWrap"><img src="${tp.front_sketch}" draggable="false">${frontCallouts.map(c => `<button class="sw-pin" style="left:${c.x}%;top:${c.y}%" data-n="${c.sequence}">${c.sequence}</button>`).join("")}</div>`
+							: `<div class="sw-empty">No front sketch uploaded — upload one on the full tech pack form first.</div>`}
+							${tp.back_sketch ? `<div class="sw-sketch-block"><div class="sw-sketch-label">Back sketch <button class="sw-btn sw-btn-sm" id="swAddCalloutBack">+ Add callout</button></div><div class="sw-flat-wrap" id="swBackWrap"><img src="${tp.back_sketch}" draggable="false">${backCallouts.map(c => `<button class="sw-pin" style="left:${c.x}%;top:${c.y}%" data-n="${c.sequence}">${c.sequence}</button>`).join("")}</div></div>` : ""}
+					</div>
+				</div>
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Construction callouts</h2></div>
+					<div class="sw-card-b" id="swCalloutList" style="padding:8px">
+						${callouts.length ? callouts.map(c => `
+							<div class="sw-callout-row" data-n="${c.sequence}">
+								<span class="sw-n">${c.sequence}</span><span>${frappe.utils.escape_html(c.text)}</span>
+								<span class="sw-pill sw-pill-mut">${c.reference_image ? frappe.utils.escape_html((refImages.find(ri => ri.name === c.reference_image) || {}).label || "Reference image") : (c.sketch || "Front")}</span>
+								<button class="sw-btn sw-btn-sm sw-edit-callout" data-name="${frappe.utils.escape_html(c.name || "")}">Edit</button>
+								<button class="sw-btn sw-btn-sm sw-delete-callout" data-name="${frappe.utils.escape_html(c.name || "")}" title="Delete callout">Delete</button>
+							</div>`).join("") : `<div class="sw-empty" style="padding:8px">No callouts yet — add one from the sketch.</div>`}
+					</div>
+				</div>
+			</div>
+			<div class="sw-card">
+				<div class="sw-card-h"><h2>Construction details</h2></div>
+				<div class="sw-card-b">
+					${sw_attr("Seam type", tp.seam_type)}
+					${sw_attr("Stitch per inch", tp.stitch_per_inch)}
+					${sw_attr("Seam allowance", tp.seam_allowance)}
+					${sw_attr("Overlock", tp.overlock)}
+					${sw_attr("Top stitch", tp.top_stitch)}
+				</div>
+			</div>
+			<div class="sw-card">
+				<div class="sw-card-h"><h2>Measurements — points of measure</h2><div class="sw-right"><button class="sw-btn sw-btn-sm" id="swUploadMeasurements">Upload Excel/CSV</button><button class="sw-btn sw-btn-sm" id="swOpenTPMeasurements">Manual entry</button></div></div>
+				${pom}
+			</div>
+			<div class="sw-grid2">
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Fabric specification</h2>${bomEditable ? `<div class="sw-right"><button class="sw-btn sw-btn-sm sw-save-bom-rates">Save rates</button></div>` : ""}</div>
+					${fabricTbl}
+				</div>
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Trims &amp; accessories</h2>${bomEditable ? `<div class="sw-right"><button class="sw-btn sw-btn-sm sw-save-bom-rates">Save rates</button></div>` : ""}</div>
+					${trimTbl}
+				</div>
+			</div>
+			<div class="sw-grid2">
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Reference images</h2><div class="sw-right">
+						<label class="sw-btn sw-btn-sm" title="Take a photo with your camera">📷 Take photo<input type="file" accept="image/*" capture="environment" id="swCaptureRefImage" hidden></label>
+						<button class="sw-btn sw-btn-sm" id="swAddReferenceImage">+ Upload</button>
+					</div></div>
+					<div class="sw-card-b" style="display:flex;gap:8px;flex-wrap:wrap">
+						${refImages.length ? refImages.map(ri => {
+							const n = callouts.filter(c => c.reference_image === ri.name).length;
+							return `<div class="sw-refimg-thumb ${ri.name === this.tp_active_refimg ? "sel" : ""}" data-select-refimg="${ri.name || ""}" title="${frappe.utils.escape_html(ri.label || "")} - click to view &amp; annotate">
+								<img src="${ri.image}">
+								${n ? `<span class="sw-refimg-count">${n}</span>` : ""}
+							</div>`;
+						}).join("") : `<div class="sw-empty">No reference images.</div>`}
+					</div>
+					${(() => {
+						const activeRi = refImages.find(ri => ri.name === this.tp_active_refimg);
+						if (!activeRi) return "";
+						const riCallouts = callouts.filter(c => c.reference_image === activeRi.name);
+						return `<div class="sw-card-b" style="border-top:1px solid var(--sw-line)">
+							<div class="sw-samp-annotator-bar">
+								<span class="sw-muted-sm">${frappe.utils.escape_html(activeRi.label || "Reference image")}</span>
+								<div class="right">
+									<button class="sw-btn sw-btn-sm" id="swAddRefImgCallout">+ Add callout</button>
+									<button class="sw-btn sw-btn-sm" id="swCloseRefImgAnnotator">Close</button>
+								</div>
+							</div>
+							<div class="sw-flat-wrap sw-samp-annotator-img" id="swRefImgWrap" data-refimg="${activeRi.name}">
+								<img src="${activeRi.image}" draggable="false">
+								${riCallouts.map(c => `<button class="sw-pin" style="left:${c.x}%;top:${c.y}%" data-n="${c.sequence}">${c.sequence}</button>`).join("")}
+							</div>
+						</div>`;
+					})()}
+				</div>
+				<div class="sw-card">
+					<div class="sw-card-h"><h2>Attachments</h2></div>
+					<div class="sw-card-b">
+						${attachments.length ? attachments.map(a => `<div class="sw-attr"><span><a href="${a.file}" target="_blank">${frappe.utils.escape_html(a.file_name || a.file)}</a></span><span class="sw-muted">${frappe.utils.escape_html(a.remark || "")}</span></div>`).join("") : `<div class="sw-empty">No attachments.</div>`}
+					</div>
+				</div>
+			</div>
+		`);
+		this.tp = tp;
+		$panels.off();
+		this.bind_generate_bom_button($panels);
+		$panels.find(".sw-save-bom-rates").on("click", () => this.save_bom_rates_from_techpack($panels));
+		$panels.find("#swOpenTPForm").on("click", () => frappe.set_route("Form", "Design Tech Pack", tp.name));
+		$panels.find("#swTechPackStatus").on("change", (e) => {
+			const status = $(e.currentTarget).val();
+			frappe.dom.freeze("Saving…");
+			frappe.call({
+				method: "frappe.client.set_value",
+				args: { doctype: "Design Tech Pack", name: tp.name, fieldname: "status", value: status },
+				callback: () => {
+					frappe.dom.unfreeze();
+					this.tp.status = status;
+					sw_toast(this.wrapper, `Tech pack status set to ${status}.`);
+					// The BOM-generation gate re-checks Design Tech Pack.status
+					// server-side on the next "Generate BOM" click regardless,
+					// but re-render this tab so the banner and Generate BOM
+					// button/hint reflect the new status immediately too.
+					this.render_techpack_tab($panels);
+				},
+				error: () => frappe.dom.unfreeze()
+			});
+		});
+		$panels.find("#swOpenTPMeasurements").on("click", () => frappe.set_route("Form", "Design Tech Pack", tp.name));
+		$panels.find("#swUploadMeasurements").on("click", () => this.upload_measurements());
+		$panels.find("#swTechPackVersion").on("click", () => this.show_version_history(
+			"Tech Pack Version History",
+			"apparel_erp.product_development.doctype.design_tech_pack.design_tech_pack.get_version_history",
+			{ name: tp.name }
+		));
+		$panels.find("#swDownloadPdf").on("click", () => {
+			const url = `/printview?doctype=${encodeURIComponent("Design Tech Pack")}&name=${encodeURIComponent(tp.name)}&format=${encodeURIComponent("Tech Pack Sheet")}&no_letterhead=0`;
+			window.open(url, "_blank");
+		});
+		$panels.find("#swAddReferenceImage").on("click", () => this.add_reference_image());
+		$panels.find("#swCaptureRefImage").on("change", (e) => this.capture_reference_image(e, $panels));
+		$panels.find("[data-select-refimg]").on("click", (e) => {
+			const name = $(e.currentTarget).data("select-refimg");
+			this.tp_active_refimg = (this.tp_active_refimg === name) ? null : name;
+			this.tpl_techpack($panels, this.tp, this.style);
+		});
+		$panels.find("#swCloseRefImgAnnotator").on("click", () => {
+			this.tp_active_refimg = null;
+			this.tpl_techpack($panels, this.tp, this.style);
+		});
+		(() => {
+			const $wrap = $panels.find("#swRefImgWrap");
+			const refImgName = $wrap.data("refimg");
+			$panels.find("#swAddRefImgCallout").on("click", (e) => {
+				if (!$wrap.length) return;
+				const adding = $wrap.toggleClass("adding").hasClass("adding");
+				$(e.currentTarget).text(adding ? "Click the photo…" : "+ Add callout");
+			});
+			$wrap.on("click", (e) => {
+				if (!$wrap.hasClass("adding") || $(e.target).hasClass("sw-pin")) return;
+				const rect = $wrap[0].getBoundingClientRect();
+				const x = ((e.clientX - rect.left) / rect.width) * 100;
+				const y = ((e.clientY - rect.top) / rect.height) * 100;
+				frappe.prompt(
+					[{ fieldname: "text", label: "Construction note", fieldtype: "Data", reqd: 1 }],
+					(values) => {
+						this.tp.callouts = this.tp.callouts || [];
+						const next_n = this.tp.callouts.reduce((max, row) => Math.max(max, row.sequence || 0), 0) + 1;
+						this.tp.callouts.push({ sequence: next_n, text: values.text, reference_image: refImgName, x: x.toFixed(2), y: y.toFixed(2) });
+						this.save_techpack_and_refresh();
+					},
+					"Add callout",
+					"Add"
+				);
+				$wrap.removeClass("adding");
+				$panels.find("#swAddRefImgCallout").text("+ Add callout");
+			});
+		})();
+
+		[
+			{ wrapper: "#swFrontWrap", button: "#swAddCalloutFront", sketch: "Front" },
+			{ wrapper: "#swBackWrap", button: "#swAddCalloutBack", sketch: "Back" }
+		].forEach(({ wrapper, button, sketch }) => {
+			const $wrap = $panels.find(wrapper);
+			$panels.find(button).on("click", (e) => {
+				if (!$wrap.length) {
+					frappe.show_alert({ message: `Upload a ${sketch.toLowerCase()} sketch before adding a callout.`, indicator: "orange" });
+					return;
+				}
+				const adding = $wrap.toggleClass("adding").hasClass("adding");
+				$(e.currentTarget).text(adding ? "Click the sketch…" : "+ Add callout");
+			});
+			$wrap.on("click", (e) => {
+				if (!$wrap.hasClass("adding") || $(e.target).hasClass("sw-pin")) return;
+				const rect = $wrap[0].getBoundingClientRect();
+				const x = ((e.clientX - rect.left) / rect.width) * 100;
+				const y = ((e.clientY - rect.top) / rect.height) * 100;
+				frappe.prompt(
+					[{ fieldname: "text", label: "Construction note", fieldtype: "Data", reqd: 1 }],
+					(values) => {
+						this.tp.callouts = this.tp.callouts || [];
+						const next_n = this.tp.callouts.reduce((max, row) => Math.max(max, row.sequence || 0), 0) + 1;
+						this.tp.callouts.push({ sequence: next_n, text: values.text, sketch, x: x.toFixed(2), y: y.toFixed(2) });
+						this.save_techpack_and_refresh();
+					},
+					"Add callout",
+					"Add"
+				);
+				$wrap.removeClass("adding");
+				$panels.find(button).text("+ Add callout");
+			});
+		});
+		const select_callout = (n) => {
+			$panels.find(".sw-pin").toggleClass("on", false);
+			$panels.find(`.sw-pin[data-n="${n}"]`).addClass("on");
+			$panels.find(".sw-callout-row").toggleClass("on", false);
+			$panels.find(`.sw-callout-row[data-n="${n}"]`).addClass("on");
+		};
+		$panels.find(".sw-pin").on("click", (e) => select_callout($(e.currentTarget).data("n")));
+		$panels.find(".sw-callout-row").on("click", (e) => select_callout($(e.currentTarget).data("n")));
+		$panels.find(".sw-edit-callout").on("click", (e) => {
+			e.stopPropagation();
+			const name = $(e.currentTarget).data("name");
+			const callout = this.tp.callouts.find(row => row.name === name);
+			if (callout) this.edit_callout(callout);
+		});
+		$panels.find(".sw-delete-callout").on("click", (e) => {
+			e.stopPropagation();
+			const name = $(e.currentTarget).data("name");
+			const callout = this.tp.callouts.find(row => row.name === name);
+			if (!callout) return;
+			frappe.confirm("Delete this callout?", () => {
+				this.tp.callouts = this.tp.callouts.filter(row => row !== callout);
+				this.save_techpack_and_refresh();
+			});
+		});
+	}
+
+	edit_callout(callout) {
+		frappe.prompt(
+			[
+				{ fieldname: "text", label: "Construction note", fieldtype: "Data", reqd: 1, default: callout.text },
+				{ fieldname: "sketch", label: "Sketch", fieldtype: "Select", options: "Front\nBack", default: callout.sketch || "Front" },
+				{ fieldname: "x", label: "X (% from left)", fieldtype: "Float", default: callout.x },
+				{ fieldname: "y", label: "Y (% from top)", fieldtype: "Float", default: callout.y }
+			],
+			(values) => {
+				Object.assign(callout, values);
+				this.save_techpack_and_refresh();
+			},
+			"Edit callout",
+			"Save"
+		);
+	}
+
+	add_reference_image() {
+		frappe.prompt(
+			[{ fieldname: "label", label: "Image label", fieldtype: "Data", reqd: 1 }],
+			(values) => {
+				new frappe.ui.FileUploader({
+					doctype: "Design Tech Pack",
+					docname: this.tp.name,
+					on_success: (file) => {
+						this.tp.reference_images = this.tp.reference_images || [];
+						this.tp.reference_images.push({ label: values.label, image: file.file_url, capture_source: "Desktop" });
+						this.save_techpack_and_refresh();
+					}
+				});
+			},
+			"Add reference image",
+			"Upload"
+		);
+	}
+
+	capture_reference_image(e, $panels) {
+		const file = e.target.files && e.target.files[0];
+		e.target.value = "";
+		if (!file) return;
+		frappe.prompt(
+			[{ fieldname: "label", label: "Image label", fieldtype: "Data", reqd: 1, default: "Photo" }],
+			(values) => {
+				const formData = new FormData();
+				formData.append("file", file);
+				formData.append("is_private", 1);
+				formData.append("doctype", "Design Tech Pack");
+				formData.append("docname", this.tp.name);
+				frappe.dom.freeze("Uploading photo…");
+				fetch("/api/method/upload_file", {
+					method: "POST",
+					headers: { "X-Frappe-CSRF-Token": frappe.csrf_token },
+					body: formData
+				})
+					.then(r => r.json())
+					.then(data => {
+						frappe.dom.unfreeze();
+						const file_url = data.message && data.message.file_url;
+						if (!file_url) throw new Error("Upload did not return a file URL");
+						this.tp.reference_images = this.tp.reference_images || [];
+						this.tp.reference_images.push({ label: values.label, image: file_url, capture_source: "Mobile" });
+						this.save_techpack_and_refresh();
+					})
+					.catch((err) => {
+						frappe.dom.unfreeze();
+						console.error("Photo upload failed", err);
+						frappe.msgprint({ title: __("Upload failed"), indicator: "red", message: __("Could not upload the photo. Please try again.") });
+					});
+			},
+			"Take photo",
+			"Save"
+		);
+	}
+
+	upload_measurements() {
+		new frappe.ui.FileUploader({
+			doctype: "Design Tech Pack",
+			docname: this.tp.name,
+			allow_multiple: false,
+			on_success: (file) => {
+				frappe.call({
+					method: "apparel_erp.product_development.doctype.design_tech_pack.design_tech_pack.parse_measurements_sheet",
+					args: { name: this.tp.name, file_url: file.file_url },
+					freeze: true,
+					freeze_message: "Reading measurement sheet..."
+				}).then((parsed) => {
+					if (!parsed.message) return;
+					this.tp.measurements = parsed.message;
+					frappe.call({
+						method: "frappe.client.save",
+						args: { doc: this.tp },
+						freeze: true,
+						freeze_message: "Saving measurements..."
+					}).then((saved) => {
+						this.tp = saved.message;
+						const $panels = $(this.wrapper).find("#swPanels");
+						this.tpl_techpack($panels, this.tp, this.style);
+						frappe.show_alert({
+							message: `Imported ${parsed.message.length} measurement row(s).`,
+							indicator: "green"
+						});
+					});
+				});
+			}
+		});
+	}
+
+	save_bom_rates_from_techpack($panels) {
+		// Writes straight to the Style BOM lines via update_style_bom_rates
+		// (same record the BOM tab edits), then re-renders this tab from a
+		// fresh server fetch and refreshes any BOM/Costing data already
+		// cached in memory - so a price typed here shows up immediately on
+		// the other tabs too, not just after they happen to reload later.
+		const rates = {};
+		$panels.find("[data-rate-line]").each((_, el) => {
+			const $el = $(el);
+			const lineId = $el.data("rate-line");
+			if (lineId) rates[lineId] = Number($el.val()) || 0;
+		});
+		if (!Object.keys(rates).length) return;
+
+		frappe.dom.freeze("Saving rates…");
+		frappe.call({
+			method: "apparel_erp.product_development.doctype.style_bom.style_bom.update_style_bom_rates",
+			args: { style: this.style.name, rates: JSON.stringify(rates) },
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				if (this.workspace_bom) this.workspace_bom = r.message;
+				this.workspace_cost = null;
+				this.render_techpack_tab($panels);
+				sw_toast(this.wrapper, "Rates saved to the Style BOM.");
+			},
+			error: () => frappe.dom.unfreeze()
+		});
+	}
+
+	show_version_history(title, method, args) {
+		frappe.call({ method, args }).then(r => {
+			const history = r.message || [];
+			const format_value = (value) => {
+				if (value === null || value === undefined || value === "") return "Empty";
+				if (typeof value === "object") return Object.entries(value)
+					.map(([key, item]) => `${key.replaceAll("_", " ")}: ${format_value(item)}`)
+					.join(", ");
+				return String(value);
+			};
+			const format_change = (change) => {
+				const field = (change.field || "Field").replaceAll("_", " ");
+				if (change.detail) {
+					const action = change.detail[0] || "Updated";
+					const details = change.detail.slice(1).map(format_value).join("; ");
+					return `<div class="sw-history-change"><span class="sw-history-action">${frappe.utils.escape_html(action)}</span><span>${frappe.utils.escape_html(field)}</span>${details ? `<span class="sw-history-detail">${frappe.utils.escape_html(details)}</span>` : ""}</div>`;
+				}
+				return `<div class="sw-history-change"><span>${frappe.utils.escape_html(field)}</span><span class="sw-history-old">${frappe.utils.escape_html(format_value(change.old))}</span><span class="sw-history-arrow">&rarr;</span><span class="sw-history-new">${frappe.utils.escape_html(format_value(change.new))}</span></div>`;
+			};
+			const body = history.length ? `<div class="sw-history-list">${history.map(entry => `
+				<div class="sw-history-entry">
+					<div class="sw-history-entry-head"><strong>${frappe.utils.escape_html(entry.version || "Revision")}</strong><span>${frappe.utils.escape_html(frappe.datetime.str_to_user(entry.creation))}</span><span>by ${frappe.utils.escape_html(entry.owner || "Unknown user")}</span></div>
+					<div>${(entry.changes || []).map(format_change).join("")}</div>
+				</div>`).join("")}</div>` : `<div class="sw-empty">No tracked previous versions yet.</div>`;
+			const styled_body = `${body}<style>
+				.sw-history-entry{border:1px solid var(--sw-line);border-radius:6px;padding:12px 14px;margin-bottom:10px;background:var(--card-bg,#fff)}
+				.sw-history-entry-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}.sw-history-entry-head span{color:var(--text-muted);font-size:12px}
+				.sw-history-change{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--sw-line);text-transform:capitalize}.sw-history-action{font-size:11px;font-weight:600;color:var(--primary)}
+				.sw-history-old{color:var(--text-muted)}.sw-history-new{font-weight:600}.sw-history-arrow{color:var(--text-muted)}.sw-history-detail{color:var(--text-muted);font-size:12px}
+			</style>`;
+			frappe.msgprint({ title, message: styled_body, wide: true });
+		});
+	}
+
+	save_techpack_and_refresh() {
+		frappe.dom.freeze("Saving callout…");
+		frappe.call({
+			method: "frappe.client.save",
+			args: { doc: this.tp },
+			callback: (r) => {
+				frappe.dom.unfreeze();
+				sw_toast(this.wrapper, "Callout saved.");
+				const $panels = $(this.wrapper).find("#swPanels");
+				this.tpl_techpack($panels, r.message);
+			},
+			error: () => frappe.dom.unfreeze()
+		});
+	}
+
+	// ---------- generic preview tab (tna / jobwork) ----------
+	tpl_preview_tab(title, body) {
+		return `
+			<div class="sw-banner sw-banner-bad">
+				<span><b>${title}</b> ${body}</span>
+			</div>
+			<div class="sw-card">
+				<div class="sw-card-b">
+					<div class="sw-empty">This tab intentionally shows nothing live — connect a doctype to bring it to life, following the same pattern as the Colours &amp; Sizes and Tech pack tabs on this page.</div>
+				</div>
+			</div>
+		`;
+	}
+
+	close_drawer() {
+		$(this.wrapper).find("#swDrawer").removeClass("on");
+		$(this.wrapper).find("#swScrim").removeClass("on");
+	}
+}
+
+function sw_bom_rule(line) {
+	if (line.varies_by_colour && line.varies_by_size) return { label: "Colour × size", cls: "sw-pill-warn" };
+	if (line.varies_by_colour) return { label: "Colour", cls: "sw-pill-warn" };
+	if (line.varies_by_size) return { label: "Size", cls: "sw-pill-warn" };
+	return { label: "Common", cls: "sw-pill-ok" };
+}
+
+function sw_rule_to_flags(rule) {
+	if (rule === "Colour × size") return { varies_by_colour: 1, varies_by_size: 1, resolution_rule: "Match garment colour" };
+	if (rule === "Colour") return { varies_by_colour: 1, varies_by_size: 0, resolution_rule: "Match garment colour" };
+	if (rule === "Size") return { varies_by_colour: 0, varies_by_size: 1, resolution_rule: "Match garment size" };
+	return { varies_by_colour: 0, varies_by_size: 0, resolution_rule: "Fixed" };
+}
+
+function sw_status_pill(status) {
+	if (status === "Completed") return "sw-pill-ok";
+	if (status === "In Progress") return "sw-pill-warn";
+	return "sw-pill-mut";
+}
+
+function sw_attr(label, value) {
+	return `<div class="sw-attr"><span>${label}</span><span>${value ? frappe.utils.escape_html(String(value)) : '<span class="sw-empty">—</span>'}</span></div>`;
+}
+
+function sw_attr_link(label, value, onClick) {
+	const id = "sw-lnk-" + frappe.utils.get_random(6);
+	setTimeout(() => $(`#${id}`).on("click", (e) => { e.preventDefault(); onClick(); }), 0);
+	return `<div class="sw-attr"><span>${label}</span><a href="#" id="${id}">${frappe.utils.escape_html(String(value))}</a></div>`;
+}
+
+function sw_toast(wrapper, msg) {
+	const $t = $(wrapper).find("#swToast");
+	$t.text(msg).addClass("on");
+	clearTimeout($t.data("tt"));
+	$t.data("tt", setTimeout(() => $t.removeClass("on"), 3200));
+}
+
+const EXTRA_ITEM_CHARGE_TYPES = ["Actual", "On Net Total", "On Previous Row Amount", "On Previous Row Total", "On Item Quantity"];
+
+function extraItemRowHtml(row, editable, rowNumber) {
+	// row.name (a saved child row's docname) keys an existing row so a
+	// remove click can target it precisely; a freshly-added blank row (no
+	// name yet) gets a client-only key instead. Either way collect_cost_
+	// payload just reads whatever rows are currently in the DOM.
+	const key = row.name || row.key || ("new-" + frappe.utils.get_random(8));
+	const label = row.label ? frappe.utils.escape_html(row.label) : "";
+	const chargeType = row.charge_type || "Actual";
+	const rate = row.rate != null ? row.rate : "";
+	const rowId = row.row_id != null ? row.row_id : "";
+	const amount = row.amount != null ? row.amount : "";
+	const needsRate = chargeType !== "Actual";
+	const needsRowRef = chargeType === "On Previous Row Amount" || chargeType === "On Previous Row Total";
+	const typeOptions = EXTRA_ITEM_CHARGE_TYPES.map(t => `<option value="${t}" ${chargeType === t ? "selected" : ""}>${t}</option>`).join("");
+	return `<tr class="sw-extra-row" data-row-key="${key}">
+		<td class="sw-extra-n">${rowNumber}</td>
+		<td><input type="text" class="sw-cell sw-extra-label" placeholder="e.g. Freight surcharge" value="${label}" ${editable ? "" : "readonly"}></td>
+		<td><select class="sw-cell sw-extra-type" ${editable ? "" : "disabled"}>${typeOptions}</select></td>
+		<td class="num"><input type="number" step="0.01" class="sw-cell sw-extra-rate" placeholder="%" value="${rate}" style="${needsRate ? "" : "visibility:hidden"}" ${editable ? "" : "readonly"}></td>
+		<td class="num"><input type="number" step="1" min="1" max="${Math.max(rowNumber - 1, 1)}" class="sw-cell sw-extra-rowid" placeholder="row #" value="${rowId}" style="${needsRowRef ? "" : "visibility:hidden"}" ${editable ? "" : "readonly"}></td>
+		<td class="num"><input type="number" step="0.01" class="sw-cell sw-extra-amount" placeholder="0.00" value="${amount}" ${(needsRate || !editable) ? "readonly" : ""}></td>
+		<td>${editable ? `<button type="button" class="sw-btn sw-btn-sm sw-extra-remove" title="Remove item">×</button>` : ""}</td>
+	</tr>`;
+}
+
+function extraItemRows(items, editable) {
+	const rows = items && items.length ? items : [];
+	if (!rows.length) {
+		return editable ? "" : `<tr><td colspan="7" class="sw-empty">No extra items.</td></tr>`;
+	}
+	return rows.map((r, i) => extraItemRowHtml(r, editable, i + 1)).join("");
+}
+
+function renumberExtraRows($panels) {
+	$panels.find(".sw-extra-row").each((i, el) => {
+		$(el).find(".sw-extra-n").text(i + 1);
+		$(el).find(".sw-extra-rowid").attr("max", Math.max(i, 1));
+	});
+}
+
+function gap_pill_html(fmt, selling, target) {
+	const gap = selling - target;
+	return target
+		? `<span class="pill ${gap <= 0 ? "pill-ok" : "pill-warn"}" id="swTargetGap">${fmt(Math.abs(gap))} ${gap >= 0 ? "above" : "below"}</span>`
+		: `<span class="empty">No buyer target</span>`;
+}
+
+function inject_sw_css() {
+	if (document.getElementById("sw-workspace-css")) return;
+	const style = document.createElement("style");
+	style.id = "sw-workspace-css";
+	style.textContent = SW_CSS;
+	document.head.appendChild(style);
+}
+
+const SW_CSS = `
+.sw-app{--sw-navy:#0F172A;--sw-navy-2:#1E293B;--sw-navy-3:#334155;--sw-accent:#2563EB;--sw-accent-soft:#EFF6FF;
+  --sw-bg:#F1F5F9;--sw-card:#FFFFFF;--sw-line:#E2E8F0;--sw-line-2:#CBD5E1;--sw-ink:#0F172A;--sw-ink-2:#475569;--sw-ink-3:#94A3B8;
+  --sw-ok:#15803D;--sw-ok-bg:#DCFCE7;--sw-warn:#B45309;--sw-warn-bg:#FEF3C7;--sw-bad:#B91C1C;--sw-bad-bg:#FEE2E2;--sw-r:8px;--sw-r-sm:6px;
+  display:flex;min-height:70vh;background:var(--sw-bg);color:var(--sw-ink);font-size:14px;line-height:1.5;margin:-15px -15px 0;border-radius:var(--sw-r);overflow:hidden}
+.sw-app *{box-sizing:border-box}
+.sw-app button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+.sw-app a{color:var(--sw-accent);text-decoration:none;cursor:pointer}
+.sw-side{width:210px;background:var(--sw-navy);color:#CBD5E1;flex-shrink:0}
+.sw-brand{padding:18px 16px;font-size:15px;font-weight:600;color:#fff;display:flex;align-items:center;gap:9px;border-bottom:1px solid var(--sw-navy-2)}
+.sw-nav{padding:10px 0}
+.sw-nav a{display:flex;align-items:center;gap:8px;padding:9px 16px;color:#94A3B8;font-size:13px;text-decoration:none}
+.sw-nav a:hover{background:var(--sw-navy-2);color:#E2E8F0}
+.sw-nav a.on{background:var(--sw-accent);color:#fff;font-weight:500}
+.sw-nav a.sw-disabled{color:#475569;cursor:not-allowed}
+.sw-soon{font-size:9px;background:var(--sw-navy-2);padding:1px 5px;border-radius:8px;margin-left:auto}
+.sw-sep{height:1px;background:var(--sw-navy-2);margin:10px 16px}
+.sw-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.sw-top{height:50px;background:var(--sw-card);border-bottom:1px solid var(--sw-line);display:flex;align-items:center;gap:16px;padding:0 18px}
+.sw-crumb{font-size:13px;color:var(--sw-ink-3)}
+.sw-crumb b{color:var(--sw-ink);font-weight:500}
+.sw-search-wrap{margin-left:auto;position:relative}
+.sw-search{width:260px;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);padding:6px 11px;font-size:13px;background:#F8FAFC}
+.sw-search-results{position:absolute;top:34px;right:0;width:280px;background:#fff;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);box-shadow:0 8px 24px rgba(15,23,42,.12);z-index:40;display:none;max-height:260px;overflow:auto}
+.sw-search-row{padding:8px 12px;font-size:13px;border-bottom:1px solid var(--sw-line);cursor:pointer;display:flex;flex-direction:column}
+.sw-search-row:hover{background:var(--sw-accent-soft)}
+.sw-search-row span{color:var(--sw-ink-2);font-size:12px}
+.sw-search-empty{padding:10px 12px;font-size:12.5px;color:var(--sw-ink-3)}
+.sw-avatar{width:28px;height:28px;border-radius:50%;background:#0D9488;color:#fff;display:grid;place-items:center;font-size:11px;font-weight:600}
+.sw-head{background:var(--sw-card);border-bottom:1px solid var(--sw-line);padding:16px 18px 0}
+.sw-head-row{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap}
+.sw-head h1{font-size:21px;font-weight:600;letter-spacing:-.2px;margin:0}
+.sw-sub{color:var(--sw-ink-2);font-size:13px;margin-top:2px}
+.sw-head-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.sw-btn{padding:7px 13px;border-radius:var(--sw-r-sm);border:1px solid var(--sw-line-2);background:#fff;font-size:13px;font-weight:500}
+.sw-btn:hover{background:#F8FAFC;border-color:var(--sw-ink-3)}
+.sw-btn-pri{background:var(--sw-accent);border-color:var(--sw-accent);color:#fff}
+.sw-btn-pri:hover{background:#1D4ED8}
+.sw-btn-sm{padding:4px 9px;font-size:12px}
+.sw-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:500}
+.sw-pill-ok{background:var(--sw-ok-bg);color:var(--sw-ok)}
+.sw-pill-warn{background:var(--sw-warn-bg);color:var(--sw-warn)}
+.sw-pill-bad{background:var(--sw-bad-bg);color:var(--sw-bad)}
+.sw-pill-mut{background:#F1F5F9;color:var(--sw-ink-2)}
+.sw-dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+.sw-tabs{display:flex;gap:2px;margin-top:14px;flex-wrap:wrap;row-gap:6px}
+.sw-tabs button{padding:9px 14px;font-size:13px;color:var(--sw-ink-2);border-bottom:2px solid transparent;white-space:nowrap}
+.sw-tabs button:hover{color:var(--sw-ink)}
+.sw-tabs button.on{color:var(--sw-accent);border-bottom-color:var(--sw-accent);font-weight:500}
+.sw-view-toggle{display:inline-flex;border:1px solid var(--sw-line-2);border-radius:6px;overflow:hidden;margin-right:6px}
+.sw-view-toggle button{border-radius:0;border:none;border-right:1px solid var(--sw-line-2)}
+.sw-view-toggle button:last-child{border-right:none}
+.sw-view-toggle button.on{background:var(--sw-accent);color:#fff}
+.sw-gantt{position:relative;padding:4px 0}
+.sw-gantt-axis{position:relative;height:22px;border-bottom:1px solid var(--sw-line);margin-bottom:8px}
+.sw-gantt-tick{position:absolute;top:0;font-size:10px;color:var(--sw-ink-2);transform:translateX(-50%);white-space:nowrap}
+.sw-gantt-today{position:absolute;top:0;height:16px;width:2px;background:var(--sw-accent);opacity:.55;border-radius:1px}
+.sw-gantt-group{font-size:11px;font-weight:600;color:var(--sw-ink-2);text-transform:uppercase;margin:12px 0 4px}
+.sw-gantt-row{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--sw-line)}
+.sw-gantt-label{width:240px;flex-shrink:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-gantt-track{position:relative;flex:1;height:16px;background:var(--sw-line);border-radius:3px}
+.sw-gantt-bar{position:absolute;top:2px;height:12px;border-radius:3px;min-width:6px}
+.sw-gantt-diamond{position:absolute;top:2px;width:12px;height:12px;transform:translateX(-50%) rotate(45deg);border-radius:2px}
+.sw-gantt-legend{display:flex;gap:14px;margin-top:12px;font-size:11px;color:var(--sw-ink-2);align-items:center;flex-wrap:wrap}
+.sw-gantt-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
+.sw-count{background:#F1F5F9;color:var(--sw-ink-2);border-radius:10px;padding:0 6px;font-size:10.5px;margin-left:5px}
+.sw-body{padding:18px 18px 50px;flex:1;overflow:auto}
+.sw-card{background:var(--sw-card);border:1px solid var(--sw-line);border-radius:var(--sw-r);margin-bottom:14px}
+.sw-card-h{padding:11px 15px;border-bottom:1px solid var(--sw-line);display:flex;align-items:center;gap:10px}
+.sw-card-h h2{font-size:11.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--sw-ink-2);margin:0}
+.sw-right{margin-left:auto;display:flex;gap:7px;align-items:center}
+.sw-card-b{padding:15px}
+.sw-f{margin-bottom:13px}
+.sw-f label{display:block;font-size:12px;color:var(--sw-ink-2);margin-bottom:4px}
+.sw-f input,.sw-f select{width:100%;padding:7px 10px;border:1px solid var(--sw-line-2);border-radius:var(--sw-r-sm);background:#fff;font-size:13.5px}
+.sw-f input:focus,.sw-f select:focus{border-color:var(--sw-accent);outline:none}
+.sw-f input[readonly],.sw-f select:disabled{background:#F8FAFC;color:var(--sw-ink-2)}
+.sw-cell{width:76px;padding:4px 6px;border:1px solid var(--sw-line-2);border-radius:4px;text-align:right;font:inherit}
+.sw-prodbom-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.sw-prodbom-table th{text-align:left;font-weight:500;color:var(--sw-ink-2);font-size:11px;padding:6px 8px;border-bottom:1px solid var(--sw-line)}
+.sw-prodbom-table td{padding:7px 8px;border-bottom:1px solid var(--sw-line)}
+.sw-muted-sm{font-size:11px;color:var(--sw-ink-2)}
+.sw-samp-layout{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;align-items:start}
+@media(max-width:1000px){.sw-samp-layout{grid-template-columns:1fr}}
+.sw-samp-stage{border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);margin-bottom:8px;background:#fff}
+.sw-samp-stage-head{display:flex;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;font-size:13px}
+.sw-samp-stage-name{font-weight:600}
+.sw-samp-owner{color:var(--sw-ink-2);font-size:12px}
+.sw-samp-status{margin-left:auto;font-size:11px;color:var(--sw-ink-2)}
+.sw-samp-closure{font-size:12px;color:var(--sw-ink-2);min-width:74px;text-align:right}
+.sw-samp-versions{border-top:1px solid var(--sw-line);padding:6px 10px}
+.sw-samp-version{display:flex;align-items:center;gap:8px;padding:6px 4px;font-size:12.5px;cursor:pointer;border-radius:4px}
+.sw-samp-version:hover{background:var(--sw-bg-2,#F8FAFC)}
+.sw-samp-version.sel{background:var(--sw-accent-10,#EEF4FF)}
+.sw-samp-vno{font-weight:600;width:26px}
+.sw-samp-desc{flex:1;color:var(--sw-ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-samp-obscount{font-size:11px;color:var(--sw-ink-2)}
+.sw-samp-vstatus{font-size:11px;color:var(--sw-ink-2);min-width:70px;text-align:right}
+.sw-samp-stage-actions{display:flex;gap:8px;margin-top:6px}
+.sw-samp-photo-strip{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.sw-samp-photo{position:relative;width:76px;height:76px;border-radius:6px;overflow:hidden;border:1px solid var(--sw-line-2);background:var(--sw-bg-2,#F8FAFC)}
+.sw-samp-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.sw-samp-photo-add{display:flex;align-items:center;justify-content:center;text-align:center;font-size:10px;color:var(--sw-ink-2);cursor:pointer;border-style:dashed}
+.sw-samp-photo-add span{line-height:1.4}
+.sw-samp-photo-add:hover{border-color:var(--sw-accent);color:var(--sw-accent)}
+.sw-samp-photo-primary{position:absolute;top:2px;left:2px;font-size:11px;color:#F5A623;text-shadow:0 0 2px #000}
+.sw-samp-photo-del{position:absolute;top:1px;right:3px;color:#fff;background:rgba(0,0,0,.45);width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;cursor:pointer;line-height:1}
+.sw-samp-photo.sel{outline:2px solid var(--sw-accent);outline-offset:1px}
+.sw-samp-annotator{margin:10px 0 16px;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);padding:8px}
+.sw-samp-annotator-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.sw-samp-annotator-img{max-width:420px}
+.sw-samp-obs.sel{background:var(--sw-accent-10,#EEF4FF);border-radius:6px}
+.sw-samp-obs-list{display:flex;flex-direction:column;gap:6px}
+.sw-samp-obs{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:5px 0;border-bottom:1px dashed var(--sw-line)}
+.sw-samp-obs:last-child{border:none}
+.sw-samp-obs-seq{color:var(--sw-ink-2);width:22px}
+.sw-samp-obs-text{flex:1}
+.sw-samp-obs-status{font-size:11px;color:var(--sw-ink-2)}
+.sw-samp-obs-resolved .sw-samp-obs-text{text-decoration:line-through;color:var(--sw-ink-2)}
+.sw-samp-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sw-extra-table{width:100%;border-collapse:collapse;font-size:13px}
+.sw-extra-table th{text-align:left;font-weight:500;color:var(--sw-ink-2);font-size:11px;padding:4px 4px}
+.sw-extra-table td{padding:3px 4px}
+.sw-extra-table .sw-extra-n{color:var(--sw-ink-2);width:18px}
+.sw-extra-table .sw-extra-label{width:100%;text-align:left}
+.sw-extra-table .sw-extra-type{width:100%;text-align:left}
+.sw-extra-table .sw-extra-rate,.sw-extra-table .sw-extra-rowid,.sw-extra-table .sw-extra-amount{width:64px}
+.sw-grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.sw-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+@media(max-width:1000px){.sw-grid2,.sw-grid3{grid-template-columns:1fr}}
+.sw-attr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--sw-line);font-size:13px}
+.sw-attr:last-child{border:none}
+.sw-attr span:first-child{color:var(--sw-ink-2)}
+.sw-app table{width:100%;border-collapse:collapse;font-size:13px}
+.sw-app th{text-align:left;font-weight:500;color:var(--sw-ink-2);font-size:11.5px;padding:8px 12px;background:#F8FAFC;border-bottom:1px solid var(--sw-line)}
+.sw-app td{padding:8px 12px;border-bottom:1px solid var(--sw-line)}
+.sw-app tr:last-child td{border-bottom:none}
+.sw-grp td{background:#F8FAFC;font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--sw-ink-2)}
+.sw-num{text-align:right;font-variant-numeric:tabular-nums}
+.sw-swatch{width:22px;height:22px;border-radius:5px;border:1px solid var(--sw-line-2);display:inline-block;vertical-align:middle}
+.sw-chip-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);margin-bottom:6px;background:#fff}
+.sw-x{color:var(--sw-ink-3);font-size:16px;line-height:1;cursor:pointer}
+.sw-x:hover{color:var(--sw-bad)}
+.sw-matrix{border-collapse:collapse}
+.sw-matrix td,.sw-matrix th{text-align:center;border:1px solid var(--sw-line);padding:7px 6px}
+.sw-matrix .sw-rowh{text-align:left;background:#F8FAFC;font-weight:500}
+.sw-sku{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--sw-accent);cursor:pointer;display:inline-block}
+.sw-sku:hover{text-decoration:underline}
+.sw-sku-gen{color:var(--sw-ink-3);border:1px dashed var(--sw-line-2);border-radius:5px;padding:3px 7px}
+.sw-empty{color:var(--sw-ink-3);font-size:12px}
+.sw-note{background:#F8FAFC;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);padding:9px 12px;font-size:12px;color:var(--sw-ink-2)}
+.sw-banner{border-radius:var(--sw-r);padding:10px 14px;font-size:13px;margin-bottom:14px;display:flex;gap:9px;align-items:flex-start}
+.sw-banner-bad{background:var(--sw-bad-bg);color:var(--sw-bad);border:1px solid #FCA5A5}
+.sw-banner-ok{background:var(--sw-ok-bg);color:var(--sw-ok);border:1px solid #86EFAC}
+.sw-flow{display:flex;align-items:flex-start;overflow-x:auto;padding:4px 0}
+.sw-step{text-align:center;min-width:110px;flex:1}
+.sw-bub{width:32px;height:32px;border-radius:50%;margin:0 auto 6px;display:grid;place-items:center;font-size:13px;font-weight:600;color:#fff}
+.sw-step small{display:block;color:var(--sw-ink-3);font-size:11px}
+.sw-nm{font-size:12px;font-weight:500}
+.sw-arrow{flex:0 0 22px;height:32px;display:grid;place-items:center;color:var(--sw-line-2)}
+.sw-picker{padding:20px}
+.sw-picker h2{margin:0 0 4px}
+.sw-muted{color:var(--sw-ink-2);font-size:13px}
+.sw-picker-list{margin-top:14px;display:flex;flex-direction:column;gap:8px;max-width:520px}
+.sw-picker-row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#fff;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);cursor:pointer}
+.sw-picker-row:hover{border-color:var(--sw-accent)}
+.sw-loading{padding:30px;color:var(--sw-ink-3);font-size:13px}
+.sw-flat-wrap{position:relative;background:#F8FAFC;border:1px solid var(--sw-line);border-radius:var(--sw-r);overflow:hidden}
+.sw-refimg-thumb{position:relative;width:72px;height:72px;border-radius:6px;overflow:hidden;border:1px solid var(--sw-line);cursor:pointer}
+.sw-refimg-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.sw-refimg-thumb.sel{outline:2px solid var(--sw-accent);outline-offset:1px}
+.sw-refimg-count{position:absolute;top:2px;right:2px;background:var(--sw-accent);color:#fff;font-size:10px;font-weight:600;min-width:14px;height:14px;border-radius:7px;display:flex;align-items:center;justify-content:center;padding:0 3px}
+.sw-flat-wrap img{width:100%;display:block;user-select:none}
+.sw-flat-wrap.adding{cursor:crosshair}
+.sw-pin{position:absolute;width:22px;height:22px;border-radius:50%;background:#0D9488;color:#fff;display:grid;place-items:center;font-size:11px;font-weight:600;transform:translate(-50%,-50%);cursor:pointer;border:2px solid #fff}
+.sw-pin:hover,.sw-pin.on{background:#0F766E;transform:translate(-50%,-50%) scale(1.15)}
+.sw-callout-row{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:var(--sw-r-sm);cursor:pointer;font-size:13px}
+.sw-callout-row:hover,.sw-callout-row.on{background:var(--sw-accent-soft)}
+.sw-callout-row .sw-n{width:20px;height:20px;border-radius:50%;background:#0D9488;color:#fff;display:grid;place-items:center;font-size:11px;font-weight:600;flex-shrink:0}
+.sw-scrim{position:fixed;inset:0;background:rgba(15,23,42,.35);display:none;z-index:150}
+.sw-scrim.on{display:block}
+.sw-drawer{position:fixed;top:0;right:0;width:400px;max-width:92vw;height:100vh;background:#fff;z-index:151;transform:translateX(100%);transition:transform .22s ease;display:flex;flex-direction:column}
+.sw-drawer.on{transform:none}
+.sw-drawer-h{padding:14px 16px;border-bottom:1px solid var(--sw-line);display:flex;align-items:center}
+.sw-drawer-b{padding:16px;overflow-y:auto;flex:1}
+.sw-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--sw-navy);color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:160;opacity:0;transition:all .25s}
+.sw-toast.on{transform:translateX(-50%);opacity:1}
+
+/* Non-prefixed class names for prototype compatibility */
+.pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:500}
+.pill-ok{background:var(--sw-ok-bg);color:var(--sw-ok)}
+.pill-warn{background:var(--sw-warn-bg);color:var(--sw-warn)}
+.pill-info{background:var(--sw-accent-soft);color:var(--sw-accent)}
+.pill-bad{background:var(--sw-bad-bg);color:var(--sw-bad)}
+.pill-mut{background:#F1F5F9;color:var(--sw-ink-2)}
+.sw-kpi{border:1px solid var(--sw-line);border-radius:var(--sw-r);padding:10px 14px;background:#fff}
+.sw-kpi .lbl{font-size:11px;color:var(--sw-ink-2);text-transform:uppercase;letter-spacing:.3px}
+.sw-kpi .val{font-size:20px;font-weight:600;margin-top:2px}
+.sw-kpi-warn{background:var(--sw-warn-bg);border-color:#FDE68A}
+.sw-kpi-warn .lbl,.sw-kpi-warn .val{color:var(--sw-warn)}
+.sw-kpi-bad{background:var(--sw-bad-bg);border-color:#FCA5A5}
+.sw-kpi-bad .lbl,.sw-kpi-bad .val{color:var(--sw-bad)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.empty{color:var(--sw-ink-3);font-size:12px}
+.note{background:#F8FAFC;border:1px solid var(--sw-line);border-radius:var(--sw-r-sm);padding:9px 12px;font-size:12px;color:var(--sw-ink-2)}
+.right{margin-left:auto;display:flex;gap:7px;align-items:center}
+.card{background:var(--sw-card);border:1px solid var(--sw-line);border-radius:var(--sw-r);margin-bottom:14px}
+.card-h{padding:11px 15px;border-bottom:1px solid var(--sw-line);display:flex;align-items:center;gap:10px}
+.card-h h2{font-size:11.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--sw-ink-2);margin:0}
+.card-b{padding:15px}
+.f{margin-bottom:13px}
+.f label{display:block;font-size:12px;color:var(--sw-ink-2);margin-bottom:4px}
+.f input,.f select{width:100%;padding:7px 10px;border:1px solid var(--sw-line-2);border-radius:var(--sw-r-sm);background:#fff;font-size:13.5px}
+.f input:focus,.f select:focus{border-color:var(--sw-accent);outline:none}
+.f input[readonly],.f select:disabled{background:#F8FAFC;color:var(--sw-ink-2)}
+.cell{width:76px;padding:4px 6px;border:1px solid var(--sw-line-2);border-radius:4px;text-align:right;font:inherit}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+@media(max-width:1000px){.grid2,.grid3{grid-template-columns:1fr}}
+.attr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--sw-line);font-size:13px}
+.attr:last-child{border:none}
+.attr span:first-child{color:var(--sw-ink-2)}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th{text-align:left;font-weight:500;color:var(--sw-ink-2);font-size:11.5px;padding:8px 12px;background:#F8FAFC;border-bottom:1px solid var(--sw-line)}
+ td{padding:8px 12px;border-bottom:1px solid var(--sw-line)}
+ tr:last-child td{border-bottom:none}
+.grp td{background:#F8FAFC;font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--sw-ink-2)}
+.sw-banner{border-radius:var(--sw-r);padding:10px 14px;font-size:13px;margin-bottom:14px;display:flex;gap:9px;align-items:flex-start}
+.sw-banner-bad{background:var(--sw-bad-bg);color:var(--sw-bad);border:1px solid #FCA5A5}
+.sw-banner-ok{background:var(--sw-ok-bg);color:var(--sw-ok);border:1px solid #86EFAC}
+.pill-ok{background:var(--sw-ok-bg);color:var(--sw-ok)}
+.pill-warn{background:var(--sw-warn-bg);color:var(--sw-warn)}
+.pill-mut{background:#F1F5F9;color:var(--sw-ink-2)}
+.sell-price{color:var(--sw-ok)}
+.gap-above{color:var(--sw-ok)}
+.gap-below{color:var(--sw-warn)}
+`
